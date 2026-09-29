@@ -1,25 +1,20 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import MetaTrader5 as mt5
-from datetime import datetime
+from datetime import datetime, timezone
 import pandas as pd
 import math
+import threading
 
 
 # ============================================================
-# TWIN EDGE V5 — MULTI-MARKET + ALERT ENGINE
+# APP SETUP
 # ============================================================
 
 app = Flask(__name__)
 CORS(app)
 
-
-# ============================================================
-# CONFIG
-# ============================================================
-
-TIMEFRAME_M1 = mt5.TIMEFRAME_M1
-TIMEFRAME_M15 = mt5.TIMEFRAME_M15
+PORT = 5000
 
 WATCHLIST = [
     "XAUUSD",
@@ -33,8 +28,17 @@ WATCHLIST = [
     "BTCUSD",
 ]
 
-M1_BARS = 150
-M15_BARS = 150
+TIMEFRAME_M1 = mt5.TIMEFRAME_M1
+TIMEFRAME_M15 = mt5.TIMEFRAME_M15
+
+
+# ============================================================
+# JOURNAL STORAGE
+# ============================================================
+
+journal_trades = []
+journal_lock = threading.Lock()
+next_trade_id = 1
 
 
 # ============================================================
@@ -42,80 +46,116 @@ M15_BARS = 150
 # ============================================================
 
 def connect_mt5():
+    """
+    Connect to the currently installed/open MetaTrader 5 terminal.
+    """
     if mt5.initialize():
         return True
 
-    print("MT5 initialize failed:", mt5.last_error())
     return False
 
 
+def ensure_mt5():
+    """
+    Make sure MT5 is connected.
+    """
+    terminal_info = mt5.terminal_info()
+
+    if terminal_info is not None:
+        return True
+
+    return connect_mt5()
+
+
 # ============================================================
-# SYMBOL FINDER
+# SYMBOL HELPERS
 # ============================================================
 
 def find_symbol(requested_symbol):
+    """
+    Find a broker symbol even if the broker uses a suffix.
+    Example:
+        EURUSD
+        EURUSDm
+        EURUSD.a
+    """
+
     requested_symbol = requested_symbol.upper().strip()
 
-    # Exact match
+    if not ensure_mt5():
+        return None
+
+    # Exact match first
     info = mt5.symbol_info(requested_symbol)
 
     if info is not None:
-        if not info.visible:
-            mt5.symbol_select(requested_symbol, True)
         return requested_symbol
 
-    # Common broker suffixes
-    suffixes = [
-        "m",
-        ".a",
-        ".",
-        "_",
-        ".m",
-        "m.a",
-    ]
-
-    for suffix in suffixes:
-        candidate = requested_symbol + suffix
-        info = mt5.symbol_info(candidate)
-
-        if info is not None:
-            if not info.visible:
-                mt5.symbol_select(candidate, True)
-            return candidate
-
-    # Search all available symbols
     symbols = mt5.symbols_get()
 
-    if symbols:
-        for symbol in symbols:
-            name = symbol.name.upper()
+    if symbols is None:
+        return None
 
-            if name == requested_symbol:
-                if not symbol.visible:
-                    mt5.symbol_select(symbol.name, True)
-                return symbol.name
+    # Starts-with match
+    for symbol in symbols:
+        name = symbol.name.upper()
 
-        for symbol in symbols:
-            name = symbol.name.upper()
+        if name.startswith(requested_symbol):
+            return symbol.name
 
-            if name.startswith(requested_symbol):
-                if not symbol.visible:
-                    mt5.symbol_select(symbol.name, True)
-                return symbol.name
+    # Contains match
+    for symbol in symbols:
+        name = symbol.name.upper()
+
+        if requested_symbol in name:
+            return symbol.name
 
     return None
 
 
 # ============================================================
-# GET MARKET DATA
+# SAFE NUMBER HELPERS
 # ============================================================
 
-def get_rates(symbol, timeframe, bars):
+def safe_float(value, default=0.0):
+    try:
+        number = float(value)
+
+        if math.isnan(number) or math.isinf(number):
+            return default
+
+        return number
+
+    except (TypeError, ValueError):
+        return default
+
+
+def round_number(value, digits=5):
+    return round(safe_float(value), digits)
+
+
+# ============================================================
+# MARKET DATA
+# ============================================================
+
+def get_rates(symbol, timeframe, count=200):
+    """
+    Get OHLC candle data from MT5.
+    """
+
+    if not ensure_mt5():
+        return None
+
+    broker_symbol = find_symbol(symbol)
+
+    if broker_symbol is None:
+        return None
+
     rates = mt5.copy_rates_from_pos(
-        symbol,
+        broker_symbol,
         timeframe,
         0,
-        bars
+        count,
     )
 
     if rates is None or len(rates) == 0:
@@ -123,155 +163,222 @@ def get_rates(symbol, timeframe, bars):
 
     df = pd.DataFrame(rates)
 
+    if df.empty:
+        return None
+
     df["time"] = pd.to_datetime(
         df["time"],
-        unit="s"
+        unit="s",
+        utc=True,
     )
 
     return df
 
 
+def get_tick(symbol):
+    """
+    Get current bid/ask.
+    """
+
+    if not ensure_mt5():
+        return None
+
+    broker_symbol = find_symbol(symbol)
+
+    if broker_symbol is None:
+        return None
+
+    tick = mt5.symbol_info_tick(broker_symbol)
+
+    if tick is None:
+        return None
+
+    return {
+        "bid": safe_float(tick.bid),
+        "ask": safe_float(tick.ask),
+        "last": safe_float(tick.last),
+        "time": int(tick.time),
+    }
+
+
 # ============================================================
-# EMA
+# INDICATORS
 # ============================================================
 
 def calculate_ema(df, period=20):
-    return df["close"].ewm(
+    if df is None or df.empty:
+        return None
+
+    ema = df["close"].ewm(
         span=period,
-        adjust=False
+        adjust=False,
     ).mean()
 
+    return safe_float(ema.iloc[-1])
 
-# ============================================================
-# RSI
-# ============================================================
 
 def calculate_rsi(df, period=14):
+    if df is None or len(df) < period + 1:
+        return None
+
     delta = df["close"].diff()
 
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    gains = delta.clip(lower=0)
+    losses = -delta.clip(upper=0)
 
-    average_gain = gain.rolling(period).mean()
-    average_loss = loss.rolling(period).mean()
+    average_gain = gains.ewm(
+        alpha=1 / period,
+        min_periods=period,
+        adjust=False,
+    ).mean()
 
-    rs = average_gain / average_loss.replace(0, math.nan)
+    average_loss = losses.ewm(
+        alpha=1 / period,
+        min_periods=period,
+        adjust=False,
+    ).mean()
+
+    if average_loss.iloc[-1] == 0:
+        return 100.0
+
+    rs = average_gain.iloc[-1] / average_loss.iloc[-1]
 
     rsi = 100 - (100 / (1 + rs))
 
-    return rsi
+    return safe_float(rsi)
 
 
 # ============================================================
-# SWING POINTS
+# SWING / MARKET STRUCTURE
 # ============================================================
 
-def find_swing_points(df, left=2, right=2):
+def find_swing_highs(df, lookback=2):
     highs = []
+
+    if df is None or len(df) < lookback * 2 + 1:
+        return highs
+
+    for i in range(
+        lookback,
+        len(df) - lookback,
+    ):
+        current = df["high"].iloc[i]
+
+        left = df["high"].iloc[
+            i - lookback:i
+        ]
+
+        right = df["high"].iloc[
+            i + 1:i + lookback + 1
+        ]
+
+        if current >= left.max() and current >= right.max():
+            highs.append(
+                {
+                    "index": i,
+                    "price": safe_float(current),
+                }
+            )
+
+    return highs
+
+
+def find_swing_lows(df, lookback=2):
     lows = []
 
-    if len(df) < left + right + 1:
-        return highs, lows
+    if df is None or len(df) < lookback * 2 + 1:
+        return lows
 
-    for i in range(left, len(df) - right):
+    for i in range(
+        lookback,
+        len(df) - lookback,
+    ):
+        current = df["low"].iloc[i]
 
-        current_high = df.iloc[i]["high"]
-        current_low = df.iloc[i]["low"]
+        left = df["low"].iloc[
+            i - lookback:i
+        ]
 
-        left_highs = df.iloc[i-left:i]["high"]
-        right_highs = df.iloc[i+1:i+1+right]["high"]
+        right = df["low"].iloc[
+            i + 1:i + lookback + 1
+        ]
 
-        left_lows = df.iloc[i-left:i]["low"]
-        right_lows = df.iloc[i+1:i+1+right]["low"]
+        if current <= left.min() and current <= right.min():
+            lows.append(
+                {
+                    "index": i,
+                    "price": safe_float(current),
+                }
+            )
 
-        if current_high >= left_highs.max() and current_high >= right_highs.max():
-            highs.append({
-                "index": i,
-                "price": float(current_high)
-            })
+    return lows
 
-        if current_low <= left_lows.min() and current_low <= right_lows.min():
-            lows.append({
-                "index": i,
-                "price": float(current_low)
-            })
-
-    return highs, lows
-
-
-# ============================================================
-# MARKET STRUCTURE
-# ============================================================
 
 def detect_market_structure(df):
+    """
+    Determine HH/HL or LH/LL structure.
+    """
 
-    highs, lows = find_swing_points(df)
+    if df is None or len(df) < 20:
+        return {
+            "direction": "sideways",
+            "description": "Not enough data",
+            "confidence": 0,
+            "highs": [],
+            "lows": [],
+        }
+
+    highs = find_swing_highs(df)
+    lows = find_swing_lows(df)
 
     recent_highs = highs[-3:]
     recent_lows = lows[-3:]
 
-    bullish_points = 0
-    bearish_points = 0
+    if len(recent_highs) < 2 or len(recent_lows) < 2:
+        return {
+            "direction": "sideways",
+            "description": "No clear structure",
+            "confidence": 20,
+            "highs": recent_highs,
+            "lows": recent_lows,
+        }
 
-    description = "Mixed structure"
-    trend = "sideways"
-    confidence = 50
+    previous_high = recent_highs[-2]["price"]
+    latest_high = recent_highs[-1]["price"]
 
-    if len(recent_highs) >= 2:
-        previous_high = recent_highs[-2]["price"]
-        latest_high = recent_highs[-1]["price"]
+    previous_low = recent_lows[-2]["price"]
+    latest_low = recent_lows[-1]["price"]
 
-        if latest_high > previous_high:
-            bullish_points += 1
+    higher_high = latest_high > previous_high
+    higher_low = latest_low > previous_low
 
-        elif latest_high < previous_high:
-            bearish_points += 1
+    lower_high = latest_high < previous_high
+    lower_low = latest_low < previous_low
 
-    if len(recent_lows) >= 2:
-        previous_low = recent_lows[-2]["price"]
-        latest_low = recent_lows[-1]["price"]
+    if higher_high and higher_low:
+        return {
+            "direction": "bullish",
+            "description": "HH + HL",
+            "confidence": 90,
+            "highs": recent_highs,
+            "lows": recent_lows,
+        }
 
-        if latest_low > previous_low:
-            bullish_points += 1
-
-        elif latest_low < previous_low:
-            bearish_points += 1
-
-    if bullish_points >= 2:
-        trend = "uptrend"
-        description = "HH + HL"
-        confidence = 90
-
-    elif bearish_points >= 2:
-        trend = "downtrend"
-        description = "LH + LL"
-        confidence = 90
-
-    elif bullish_points > bearish_points:
-        trend = "uptrend"
-        description = "Partial bullish structure"
-        confidence = 70
-
-    elif bearish_points > bullish_points:
-        trend = "downtrend"
-        description = "Partial bearish structure"
-        confidence = 70
-
-    direction = "none"
-
-    if trend == "uptrend":
-        direction = "bullish"
-
-    elif trend == "downtrend":
-        direction = "bearish"
+    if lower_high and lower_low:
+        return {
+            "direction": "bearish",
+            "description": "LH + LL",
+            "confidence": 90,
+            "highs": recent_highs,
+            "lows": recent_lows,
+        }
 
     return {
-        "direction": direction,
-        "trend": trend,
-        "description": description,
-        "confidence": confidence,
-        "swing_highs": recent_highs,
-        "swing_lows": recent_lows,
+        "direction": "sideways",
+        "description": "Mixed / sideways",
+        "confidence": 30,
+        "highs": recent_highs,
+        "lows": recent_lows,
     }
 
 
@@ -280,13 +387,21 @@ def detect_market_structure(df):
 # ============================================================
 
 def detect_support_resistance(df, lookback=30):
+    if df is None or df.empty:
+        return {
+            "support": None,
+            "resistance": None,
+        }
 
     recent = df.tail(lookback)
 
-    support = float(recent["low"].min())
-    resistance = float(recent["high"].max())
+    support = safe_float(recent["low"].min())
+    resistance = safe_float(recent["high"].max())
 
-    return support, resistance
+    return {
+        "support": support,
+        "resistance": resistance,
+    }
 
 
 # ============================================================
@@ -294,87 +409,95 @@ def detect_support_resistance(df, lookback=30):
 # ============================================================
 
 def detect_candlestick_confirmation(df):
-
-    if len(df) < 3:
+    if df is None or len(df) < 3:
         return {
-            "type": "none",
-            "direction": "none",
-            "strength": 0
+            "pattern": "none",
+            "direction": "neutral",
+            "strength": 0,
         }
 
+    candle = df.iloc[-1]
     previous = df.iloc[-2]
-    current = df.iloc[-1]
 
-    open_price = float(current["open"])
-    close_price = float(current["close"])
-    high = float(current["high"])
-    low = float(current["low"])
+    open_price = safe_float(candle["open"])
+    close_price = safe_float(candle["close"])
+    high = safe_float(candle["high"])
+    low = safe_float(candle["low"])
 
-    previous_open = float(previous["open"])
-    previous_close = float(previous["close"])
+    previous_open = safe_float(previous["open"])
+    previous_close = safe_float(previous["close"])
 
     body = abs(close_price - open_price)
 
+    upper_wick = high - max(
+        open_price,
+        close_price,
+    )
+
+    lower_wick = min(
+        open_price,
+        close_price,
+    ) - low
+
     candle_range = high - low
 
-    if candle_range == 0:
+    if candle_range <= 0:
         return {
-            "type": "none",
-            "direction": "none",
-            "strength": 0
+            "pattern": "none",
+            "direction": "neutral",
+            "strength": 0,
         }
 
-    upper_wick = high - max(open_price, close_price)
-    lower_wick = min(open_price, close_price) - low
-
     # Bullish engulfing
-    if (
+    bullish_engulfing = (
         previous_close < previous_open
         and close_price > open_price
-        and close_price >= previous_open
         and open_price <= previous_close
-    ):
+        and close_price >= previous_open
+    )
+
+    if bullish_engulfing:
         return {
-            "type": "bullish engulfing",
+            "pattern": "bullish engulfing",
             "direction": "bullish",
-            "strength": 3
+            "strength": 3,
         }
 
     # Bearish engulfing
-    if (
+    bearish_engulfing = (
         previous_close > previous_open
         and close_price < open_price
-        and close_price <= previous_open
         and open_price >= previous_close
-    ):
+        and close_price <= previous_open
+    )
+
+    if bearish_engulfing:
         return {
-            "type": "bearish engulfing",
+            "pattern": "bearish engulfing",
             "direction": "bearish",
-            "strength": 3
+            "strength": 3,
         }
 
     # Hammer
     if (
         lower_wick >= body * 2
-        and upper_wick <= body
-        and close_price > open_price
+        and upper_wick <= max(body, candle_range * 0.15)
     ):
         return {
-            "type": "hammer",
+            "pattern": "hammer",
             "direction": "bullish",
-            "strength": 2
+            "strength": 2,
         }
 
     # Shooting star
     if (
         upper_wick >= body * 2
-        and lower_wick <= body
-        and close_price < open_price
+        and lower_wick <= max(body, candle_range * 0.15)
     ):
         return {
-            "type": "shooting star",
+            "pattern": "shooting star",
             "direction": "bearish",
-            "strength": 2
+            "strength": 2,
         }
 
     # Strong bullish candle
@@ -383,9 +506,9 @@ def detect_candlestick_confirmation(df):
         and body >= candle_range * 0.65
     ):
         return {
-            "type": "strong bullish candle",
+            "pattern": "strong bullish candle",
             "direction": "bullish",
-            "strength": 1
+            "strength": 1,
         }
 
     # Strong bearish candle
@@ -394,15 +517,23 @@ def detect_candlestick_confirmation(df):
         and body >= candle_range * 0.65
     ):
         return {
-            "type": "strong bearish candle",
+            "pattern": "strong bearish candle",
             "direction": "bearish",
-            "strength": 1
+            "strength": 1,
+        }
+
+    # Doji
+    if body <= candle_range * 0.10:
+        return {
+            "pattern": "doji",
+            "direction": "neutral",
+            "strength": 0,
         }
 
     return {
-        "type": "none",
-        "direction": "none",
-        "strength": 0
+        "pattern": "none",
+        "direction": "neutral",
+        "strength": 0,
     }
 
 
@@ -410,101 +541,139 @@ def detect_candlestick_confirmation(df):
 # TIMEFRAME ANALYSIS
 # ============================================================
 
-def analyze_timeframe(df):
+def analyze_timeframe(symbol, timeframe, label):
+    df = get_rates(
+        symbol,
+        timeframe,
+        200,
+    )
 
-    if df is None or len(df) < 30:
-        return None
+    if df is None or df.empty:
+        return {
+            "timeframe": label,
+            "available": False,
+            "direction": "unknown",
+            "structure": "unknown",
+            "confidence": 0,
+            "ema20": None,
+            "rsi14": None,
+            "support": None,
+            "resistance": None,
+            "candlestick": {
+                "pattern": "none",
+                "direction": "neutral",
+                "strength": 0,
+            },
+            "description": "Market data unavailable",
+        }
 
-    ema = calculate_ema(df)
-    rsi = calculate_rsi(df)
+    ema20 = calculate_ema(df, 20)
+    rsi14 = calculate_rsi(df, 14)
 
     structure = detect_market_structure(df)
 
-    support, resistance = detect_support_resistance(df)
+    levels = detect_support_resistance(
+        df,
+        30,
+    )
 
-    candle = detect_candlestick_confirmation(df)
+    candlestick = detect_candlestick_confirmation(df)
 
-    price = float(df.iloc[-1]["close"])
+    current_price = safe_float(
+        df["close"].iloc[-1]
+    )
 
-    ema_value = float(ema.iloc[-1])
-    rsi_value = float(rsi.iloc[-1])
-
-    ema_direction = "bullish"
-
-    if price < ema_value:
+    if ema20 is None:
+        ema_direction = "unknown"
+    elif current_price > ema20:
+        ema_direction = "bullish"
+    elif current_price < ema20:
         ema_direction = "bearish"
+    else:
+        ema_direction = "neutral"
 
     direction = structure["direction"]
 
+    if direction == "sideways":
+        direction = ema_direction
+
     return {
+        "timeframe": label,
+        "available": True,
         "direction": direction,
-        "structure": direction,
-        "structure_trend": structure["trend"],
+        "structure": structure["direction"],
         "structure_description": structure["description"],
-        "structure_confidence": structure["confidence"],
-        "ema20": ema_value,
+        "confidence": structure["confidence"],
+        "ema20": round_number(ema20, 6),
         "ema_direction": ema_direction,
-        "price": price,
-        "support": support,
-        "resistance": resistance,
-        "rsi14": rsi_value,
-        "candlestick": candle,
+        "rsi14": round_number(rsi14, 2),
+        "support": round_number(
+            levels["support"],
+            6,
+        ),
+        "resistance": round_number(
+            levels["resistance"],
+            6,
+        ),
+        "candlestick": candlestick,
+        "description": structure["description"],
     }
 
 
 # ============================================================
-# PRICE DISTANCE
+# CANDLE DATA FOR FRONTEND CHART
 # ============================================================
 
-def percentage_distance(price, level):
-
-    if level == 0:
-        return 0
-
-    return abs(price - level) / level * 100
-
-
-# ============================================================
-# LOCATION
-# ============================================================
-
-def determine_location(price, support, resistance):
-
-    if resistance <= support:
-        return "unknown"
-
-    total_range = resistance - support
-
-    position = (price - support) / total_range
-
-    if position <= 0.30:
-        return "near support"
-
-    if position >= 0.70:
-        return "near resistance"
-
-    return "middle"
-
-
-# ============================================================
-# CHASING DETECTION
-# ============================================================
-
-def detect_chasing(price, direction, support, resistance):
-
-    location = determine_location(
-        price,
-        support,
-        resistance
+def rates_to_candles(symbol, timeframe, count=150):
+    df = get_rates(
+        symbol,
+        timeframe,
+        count,
     )
 
-    if direction == "bullish" and location == "near resistance":
-        return True
+    if df is None or df.empty:
+        return []
 
-    if direction == "bearish" and location == "near support":
-        return True
+    candles = []
 
-    return False
+    for _, row in df.iterrows():
+        candles.append(
+            {
+                "time": int(
+                    row["time"].timestamp()
+                ),
+                "open": safe_float(row["open"]),
+                "high": safe_float(row["high"]),
+                "low": safe_float(row["low"]),
+                "close": safe_float(row["close"]),
+            }
+        )
+
+    return candles
+
+
+def calculate_ema_series(df, period=20):
+    if df is None or df.empty:
+        return []
+
+    ema = df["close"].ewm(
+        span=period,
+        adjust=False,
+    ).mean()
+
+    result = []
+
+    for index, value in enumerate(ema):
+        result.append(
+            {
+                "time": int(
+                    df["time"].iloc[index].timestamp()
+                ),
+                "value": safe_float(value),
+            }
+        )
+
+    return result
 
 
 # ============================================================
@@ -512,709 +681,1120 @@ def detect_chasing(price, direction, support, resistance):
 # ============================================================
 
 def calculate_trade_levels(
+    symbol,
     direction,
     price,
     support,
-    resistance
+    resistance,
 ):
+    if price is None:
+        return {
+            "available": False,
+            "entry": None,
+            "stop_loss": None,
+            "take_profit": None,
+            "risk_distance": None,
+            "reward_distance": None,
+            "risk_reward": "1:2",
+        }
 
-    if direction not in ["bullish", "bearish"]:
-        return None
+    price = safe_float(price)
+    support = safe_float(support)
+    resistance = safe_float(resistance)
+
+    if price <= 0:
+        return {
+            "available": False,
+            "entry": None,
+            "stop_loss": None,
+            "take_profit": None,
+            "risk_distance": None,
+            "reward_distance": None,
+            "risk_reward": "1:2",
+        }
 
     buffer = max(
         price * 0.0003,
-        0.50
+        0.50 if symbol.upper() == "XAUUSD" else price * 0.0001,
     )
 
     if direction == "bullish":
-
         entry = price
 
-        stop_loss = support - buffer
+        if support > 0 and support < entry:
+            stop_loss = support - buffer
+        else:
+            stop_loss = entry - buffer
 
-        risk = entry - stop_loss
+        risk_distance = entry - stop_loss
 
-        if risk <= 0:
-            return None
+        if risk_distance <= 0:
+            return {
+                "available": False,
+                "entry": entry,
+                "stop_loss": None,
+                "take_profit": None,
+                "risk_distance": None,
+                "reward_distance": None,
+                "risk_reward": "1:2",
+            }
 
-        take_profit = entry + (risk * 2)
+        take_profit = entry + (
+            risk_distance * 2
+        )
+
+    elif direction == "bearish":
+        entry = price
+
+        if resistance > entry:
+            stop_loss = resistance + buffer
+        else:
+            stop_loss = entry + buffer
+
+        risk_distance = stop_loss - entry
+
+        if risk_distance <= 0:
+            return {
+                "available": False,
+                "entry": entry,
+                "stop_loss": None,
+                "take_profit": None,
+                "risk_distance": None,
+                "reward_distance": None,
+                "risk_reward": "1:2",
+            }
+
+        take_profit = entry - (
+            risk_distance * 2
+        )
 
     else:
-
-        entry = price
-
-        stop_loss = resistance + buffer
-
-        risk = stop_loss - entry
-
-        if risk <= 0:
-            return None
-
-        take_profit = entry - (risk * 2)
+        return {
+            "available": False,
+            "entry": price,
+            "stop_loss": None,
+            "take_profit": None,
+            "risk_distance": None,
+            "reward_distance": None,
+            "risk_reward": "1:2",
+        }
 
     return {
-        "direction": direction,
-        "entry": round(entry, 5),
-        "stop_loss": round(stop_loss, 5),
-        "take_profit": round(take_profit, 5),
-        "risk_reward": "1:2"
+        "available": True,
+        "entry": round_number(entry, 6),
+        "stop_loss": round_number(stop_loss, 6),
+        "take_profit": round_number(take_profit, 6),
+        "risk_distance": round_number(
+            risk_distance,
+            6,
+        ),
+        "reward_distance": round_number(
+            risk_distance * 2,
+            6,
+        ),
+        "risk_reward": "1:2",
     }
 
 
 # ============================================================
-# SETUP CALCULATOR
+# SETUP ANALYSIS
 # ============================================================
 
 def calculate_setup(
+    symbol,
     m15,
     m1,
-    df_m1
+    current_price,
 ):
+    score = 0
+    max_score = 10
 
     reasons = []
     warnings = []
 
-    score = 0
-    max_score = 10
-
-    if not m15 or not m1:
+    if not m15.get("available") or not m1.get("available"):
         return {
-            "direction": "none",
+            "direction": "unknown",
+            "status": "NO TRADE",
             "score": 0,
             "max_score": max_score,
-            "status": "NO TRADE",
-            "reasons": ["Insufficient market data"],
-            "warnings": [],
-            "trade_levels": None,
+            "reasons": [],
+            "warnings": [
+                "Market data unavailable",
+            ],
+            "location": "unknown",
+            "chasing": False,
         }
 
-    m15_direction = m15["direction"]
-    m1_direction = m1["direction"]
+    m15_direction = m15.get(
+        "direction",
+        "sideways",
+    )
+
+    m1_direction = m1.get(
+        "direction",
+        "sideways",
+    )
+
+    direction = m15_direction
 
     # --------------------------------------------------------
-    # M15 TREND
+    # 1. Higher timeframe direction
     # --------------------------------------------------------
 
-    if m15_direction in ["bullish", "bearish"]:
-
+    if m15_direction in (
+        "bullish",
+        "bearish",
+    ):
         score += 2
 
         reasons.append(
             f"M15 direction is {m15_direction}"
         )
-
     else:
-
         warnings.append(
-            "M15 market structure is sideways"
+            "M15 structure is sideways"
         )
 
     # --------------------------------------------------------
-    # STRUCTURE CONFIDENCE
-    # --------------------------------------------------------
-
-    if m15["structure_confidence"] >= 70:
-
-        score += 1
-
-        reasons.append(
-            "M15 structure has clear confirmation"
-        )
-
-    # --------------------------------------------------------
-    # M1 ALIGNMENT
+    # 2. M1 alignment
     # --------------------------------------------------------
 
     if (
-        m15_direction != "none"
-        and m1_direction == m15_direction
+        m1_direction == m15_direction
+        and m15_direction in (
+            "bullish",
+            "bearish",
+        )
     ):
-
         score += 2
 
         reasons.append(
-            "M1 structure aligns with M15"
+            "M1 aligns with M15 direction"
         )
-
-    elif m1_direction != "none":
-
+    else:
         warnings.append(
-            "M1 and M15 directions are conflicting"
+            "M1 does not clearly align with M15"
         )
 
     # --------------------------------------------------------
-    # EMA
+    # 3. EMA agreement
     # --------------------------------------------------------
 
     if (
-        m15_direction != "none"
-        and m15["ema_direction"] == m15_direction
+        m15.get("ema_direction")
+        == m15_direction
+        and m15_direction in (
+            "bullish",
+            "bearish",
+        )
     ):
-
         score += 1
 
         reasons.append(
             "M15 EMA20 agrees with direction"
         )
-
     else:
-
         warnings.append(
-            "EMA20 does not fully confirm direction"
+            "M15 EMA20 is not fully aligned"
+        )
+
+    if (
+        m1.get("ema_direction")
+        == m1_direction
+        and m1_direction in (
+            "bullish",
+            "bearish",
+        )
+    ):
+        score += 1
+
+        reasons.append(
+            "M1 EMA20 agrees with direction"
         )
 
     # --------------------------------------------------------
-    # RSI
+    # 4. RSI
     # --------------------------------------------------------
 
-    rsi = m1["rsi14"]
+    rsi = safe_float(
+        m1.get("rsi14"),
+        50,
+    )
 
     if m15_direction == "bullish":
-
         if 40 <= rsi <= 65:
-
             score += 1
-
             reasons.append(
-                "M1 RSI is in a healthy bullish range"
+                "M1 RSI is in a healthy bullish zone"
             )
-
-        elif rsi > 65:
-
+        elif rsi > 70:
             warnings.append(
-                "M1 RSI is elevated"
+                "M1 RSI is overbought"
             )
-
-        else:
-
+        elif rsi < 30:
             warnings.append(
-                "M1 RSI is weak for bullish setup"
+                "M1 RSI is oversold"
             )
 
     elif m15_direction == "bearish":
-
         if 35 <= rsi <= 60:
-
             score += 1
-
             reasons.append(
-                "M1 RSI is in a healthy bearish range"
+                "M1 RSI is in a healthy bearish zone"
             )
-
-        elif rsi < 35:
-
+        elif rsi < 30:
             warnings.append(
-                "M1 RSI is deeply oversold"
+                "M1 RSI is oversold"
             )
-
-        else:
-
+        elif rsi > 70:
             warnings.append(
-                "M1 RSI is weak for bearish setup"
+                "M1 RSI is overbought"
             )
 
     # --------------------------------------------------------
-    # LOCATION
+    # 5. Location
     # --------------------------------------------------------
 
-    location = determine_location(
-        m1["price"],
-        m1["support"],
-        m1["resistance"]
+    support = safe_float(
+        m1.get("support")
     )
 
-    if location == "near support" and m15_direction == "bullish":
+    resistance = safe_float(
+        m1.get("resistance")
+    )
 
+    location = "middle"
+
+    if support > 0 and resistance > support:
+        range_size = resistance - support
+
+        if range_size > 0:
+            position = (
+                current_price - support
+            ) / range_size
+
+            if position <= 0.30:
+                location = "near support"
+
+            elif position >= 0.70:
+                location = "near resistance"
+
+            else:
+                location = "middle"
+
+    if m15_direction == "bullish":
+        if location == "near support":
+            score += 2
+            reasons.append(
+                "Price is near support"
+            )
+        elif location == "middle":
+            warnings.append(
+                "Price is in the middle of the range"
+            )
+        elif location == "near resistance":
+            warnings.append(
+                "Price is near resistance"
+            )
+
+    elif m15_direction == "bearish":
+        if location == "near resistance":
+            score += 2
+            reasons.append(
+                "Price is near resistance"
+            )
+        elif location == "middle":
+            warnings.append(
+                "Price is in the middle of the range"
+            )
+        elif location == "near support":
+            warnings.append(
+                "Price is near support"
+            )
+
+    # --------------------------------------------------------
+    # 6. Candlestick confirmation
+    # --------------------------------------------------------
+
+    candle = m1.get(
+        "candlestick",
+        {},
+    )
+
+    candle_direction = candle.get(
+        "direction",
+        "neutral",
+    )
+
+    if candle_direction == m15_direction:
         score += 1
 
         reasons.append(
-            "Price is near support"
+            f"Candlestick confirmation: "
+            f"{candle.get('pattern', 'none')}"
         )
-
-    elif location == "near resistance" and m15_direction == "bearish":
-
-        score += 1
-
-        reasons.append(
-            "Price is near resistance"
-        )
-
-    elif location == "middle":
-
+    elif candle_direction != "neutral":
         warnings.append(
-            "Price is in the middle of the range"
+            "Candlestick does not confirm direction"
+        )
+    else:
+        warnings.append(
+            "No strong candlestick confirmation"
         )
 
     # --------------------------------------------------------
-    # CANDLESTICK
+    # Chasing
     # --------------------------------------------------------
 
-    candle = m1["candlestick"]
+    chasing = False
 
-    if (
-        candle["direction"] == m15_direction
-        and candle["type"] != "none"
+    if m15_direction == "bullish":
+        if resistance > 0:
+            distance_to_resistance = (
+                resistance - current_price
+            )
+
+            if distance_to_resistance <= (
+                current_price * 0.0005
+            ):
+                chasing = True
+                warnings.append(
+                    "Price is close to resistance — "
+                    "avoid chasing"
+                )
+
+    elif m15_direction == "bearish":
+        if support > 0:
+            distance_to_support = (
+                current_price - support
+            )
+
+            if distance_to_support <= (
+                current_price * 0.0005
+            ):
+                chasing = True
+                warnings.append(
+                    "Price is close to support — "
+                    "avoid chasing"
+                )
+
+    # --------------------------------------------------------
+    # Status
+    # --------------------------------------------------------
+
+    if direction not in (
+        "bullish",
+        "bearish",
     ):
-
-        score += 1
-
-        reasons.append(
-            f"Candlestick confirmation: {candle['type']}"
-        )
-
-    # --------------------------------------------------------
-    # CHASING
-    # --------------------------------------------------------
-
-    chasing = detect_chasing(
-        m1["price"],
-        m15_direction,
-        m1["support"],
-        m1["resistance"]
-    )
-
-    if chasing:
-
-        warnings.append(
-            "Possible price chasing detected"
-        )
-
-    # --------------------------------------------------------
-    # FINAL DIRECTION
-    # --------------------------------------------------------
-
-    direction = m15_direction
-
-    if direction not in ["bullish", "bearish"]:
-        direction = "none"
-
-    # --------------------------------------------------------
-    # TRADE LEVELS
-    # --------------------------------------------------------
-
-    trade_levels = None
-
-    if direction in ["bullish", "bearish"]:
-
-        trade_levels = calculate_trade_levels(
-            direction,
-            m1["price"],
-            m1["support"],
-            m1["resistance"]
-        )
-
-    # --------------------------------------------------------
-    # STATUS
-    # --------------------------------------------------------
-
-    if m15_direction == "none":
-
         status = "NO TRADE"
 
-        score = 0
+    elif chasing:
+        status = "WAIT"
 
-        trade_levels = None
-
-    elif score >= 8 and len(warnings) <= 1:
-
+    elif score >= 8:
         status = "STRONG SETUP"
 
     elif score >= 6:
-
         status = "POSSIBLE SETUP"
 
     else:
-
         status = "WAIT"
 
     return {
         "direction": direction,
+        "status": status,
         "score": score,
         "max_score": max_score,
-        "status": status,
         "reasons": reasons,
         "warnings": warnings,
-        "warnings_count": len(warnings),
         "location": location,
         "chasing": chasing,
-        "trade_levels": trade_levels,
     }
 
 
 # ============================================================
-# CANDLE FORMATTER
+# COMPLETE MARKET ANALYSIS
 # ============================================================
 
-def rates_to_candles(df):
+def build_market_analysis(symbol):
+    requested_symbol = symbol.upper().strip()
 
-    candles = []
+    broker_symbol = find_symbol(
+        requested_symbol
+    )
 
-    if df is None:
-        return candles
-
-    for _, row in df.tail(100).iterrows():
-
-        candles.append({
-            "time": int(row["time"].timestamp()),
-            "open": float(row["open"]),
-            "high": float(row["high"]),
-            "low": float(row["low"]),
-            "close": float(row["close"]),
-        })
-
-    return candles
-
-
-# ============================================================
-# MARKET ANALYSIS
-# ============================================================
-
-def analyze_market(requested_symbol):
-
-    symbol = find_symbol(requested_symbol)
-
-    if symbol is None:
-
+    if broker_symbol is None:
         return {
+            "symbol": requested_symbol,
             "requested_symbol": requested_symbol,
-            "symbol": None,
             "available": False,
-            "error": "Symbol not available on MT5"
+            "status": "UNAVAILABLE",
+            "error": "Symbol not available in MT5",
         }
 
-    tick = mt5.symbol_info_tick(symbol)
+    tick = get_tick(
+        broker_symbol
+    )
 
     if tick is None:
-
         return {
+            "symbol": requested_symbol,
             "requested_symbol": requested_symbol,
-            "symbol": symbol,
+            "broker_symbol": broker_symbol,
             "available": False,
-            "error": "No tick data available"
+            "status": "UNAVAILABLE",
+            "error": "Unable to read market price",
         }
 
-    df_m1 = get_rates(
-        symbol,
-        TIMEFRAME_M1,
-        M1_BARS
+    bid = safe_float(tick["bid"])
+    ask = safe_float(tick["ask"])
+
+    if ask > 0 and bid > 0:
+        spread = ask - bid
+    else:
+        spread = 0
+
+    current_price = (
+        (bid + ask) / 2
+        if bid > 0 and ask > 0
+        else bid or ask
     )
 
-    df_m15 = get_rates(
-        symbol,
+    m15 = analyze_timeframe(
+        requested_symbol,
         TIMEFRAME_M15,
-        M15_BARS
+        "M15",
     )
 
-    if df_m1 is None or df_m15 is None:
-
-        return {
-            "requested_symbol": requested_symbol,
-            "symbol": symbol,
-            "available": False,
-            "error": "Unable to retrieve candle data"
-        }
-
-    m1 = analyze_timeframe(df_m1)
-    m15 = analyze_timeframe(df_m15)
+    m1 = analyze_timeframe(
+        requested_symbol,
+        TIMEFRAME_M1,
+        "M1",
+    )
 
     setup = calculate_setup(
+        requested_symbol,
         m15,
         m1,
-        df_m1
+        current_price,
+    )
+
+    levels = calculate_trade_levels(
+        requested_symbol,
+        setup["direction"],
+        current_price,
+        m1.get("support"),
+        m1.get("resistance"),
+    )
+
+    candles = rates_to_candles(
+        requested_symbol,
+        TIMEFRAME_M1,
+        150,
+    )
+
+    df_m1 = get_rates(
+        requested_symbol,
+        TIMEFRAME_M1,
+        150,
+    )
+
+    ema_series = calculate_ema_series(
+        df_m1,
+        20,
     )
 
     return {
+        "symbol": requested_symbol,
         "requested_symbol": requested_symbol,
-        "symbol": symbol,
+        "broker_symbol": broker_symbol,
         "available": True,
 
-        "timestamp": datetime.now().isoformat(),
-
-        "bid": float(tick.bid),
-        "ask": float(tick.ask),
-        "spread": round(
-            float(tick.ask - tick.bid),
-            5
-        ),
+        "bid": round_number(bid, 6),
+        "ask": round_number(ask, 6),
+        "spread": round_number(spread, 6),
+        "price": round_number(current_price, 6),
 
         "direction": setup["direction"],
+        "status": setup["status"],
         "score": setup["score"],
         "max_score": setup["max_score"],
-        "status": setup["status"],
 
-        "m1": m1,
         "m15": m15,
+        "m1": m1,
 
         "setup": setup,
 
-        "candles": rates_to_candles(df_m1)
+        "trade_levels": levels,
+
+        "chart": {
+            "timeframe": "M1",
+            "candles": candles,
+            "ema20": ema_series,
+        },
+
+        "updated_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
     }
 
 
 # ============================================================
-# ALERT ENGINE
+# SCANNER
 # ============================================================
 
-def build_alerts(markets):
-
-    strong_setups = []
-    possible_setups = []
-    wait_markets = []
-    no_trade_markets = []
-
-    for market in markets:
-
-        if not market.get("available"):
-            continue
-
-        status = market.get("status", "WAIT")
-
-        alert = {
-            "symbol": market.get("symbol"),
-            "requested_symbol": market.get("requested_symbol"),
-            "direction": market.get("direction", "none"),
-            "score": market.get("score", 0),
-            "max_score": market.get("max_score", 10),
-            "status": status,
-            "price": market.get("bid"),
-            "warnings_count": market.get(
-                "setup",
-                {}
-            ).get(
-                "warnings_count",
-                0
-            ),
-        }
-
-        if status == "STRONG SETUP":
-
-            strong_setups.append(alert)
-
-        elif status == "POSSIBLE SETUP":
-
-            possible_setups.append(alert)
-
-        elif status == "WAIT":
-
-            wait_markets.append(alert)
-
-        elif status == "NO TRADE":
-
-            no_trade_markets.append(alert)
-
-    return {
-        "strong_setups": strong_setups,
-        "possible_setups": possible_setups,
-        "wait": wait_markets,
-        "no_trade": no_trade_markets,
-
-        "counts": {
-            "strong_setups": len(strong_setups),
-            "possible_setups": len(possible_setups),
-            "wait": len(wait_markets),
-            "no_trade": len(no_trade_markets),
-        }
-    }
-
-
-# ============================================================
-# HEALTH
-# ============================================================
-
-@app.route("/api/health")
-def health():
-
-    connected = mt5.terminal_info() is not None
-
-    return jsonify({
-        "status": "online",
-        "mt5_connected": connected,
-        "timestamp": datetime.now().isoformat()
-    })
-
-
-# ============================================================
-# ACCOUNT
-# ============================================================
-
-@app.route("/api/account")
-def account():
-
-    info = mt5.account_info()
-
-    if info is None:
-
-        return jsonify({
-            "error": "Unable to retrieve MT5 account"
-        }), 500
-
-    return jsonify({
-        "login": info.login,
-        "balance": float(info.balance),
-        "equity": float(info.equity),
-        "profit": float(info.profit),
-        "currency": info.currency,
-        "server": info.server,
-        "trade_allowed": bool(info.trade_allowed)
-    })
-
-
-# ============================================================
-# SINGLE MARKET
-# ============================================================
-
-@app.route("/api/market/<symbol>")
-def market(symbol):
-
-    result = analyze_market(symbol.upper())
-
-    return jsonify(result)
-
-
-# ============================================================
-# XAUUSD SHORTCUT
-# ============================================================
-
-@app.route("/api/market/xauusd")
-def xauusd():
-
-    result = analyze_market("XAUUSD")
-
-    return jsonify(result)
-
-
-# ============================================================
-# MULTI-MARKET SCANNER
-# ============================================================
-
-@app.route("/api/scanner")
-def scanner():
-
+def build_scanner():
     markets = []
 
     for symbol in WATCHLIST:
-
         try:
-
-            result = analyze_market(symbol)
-
-            markets.append(result)
-
-        except Exception as error:
-
-            print(
-                f"Scanner error for {symbol}:",
-                error
+            analysis = build_market_analysis(
+                symbol
             )
 
-            markets.append({
-                "requested_symbol": symbol,
-                "symbol": None,
-                "available": False,
-                "error": str(error)
-            })
+            if analysis.get("available"):
+                markets.append(
+                    {
+                        "symbol": symbol,
+                        "available": True,
+                        "bid": analysis.get("bid"),
+                        "ask": analysis.get("ask"),
+                        "spread": analysis.get("spread"),
+                        "price": analysis.get("price"),
+                        "direction": analysis.get(
+                            "direction"
+                        ),
+                        "status": analysis.get(
+                            "status"
+                        ),
+                        "score": analysis.get(
+                            "score",
+                            0,
+                        ),
+                        "max_score": analysis.get(
+                            "max_score",
+                            10,
+                        ),
+                        "m15_direction": analysis.get(
+                            "m15",
+                            {}
+                        ).get(
+                            "direction",
+                            "unknown",
+                        ),
+                        "m1_direction": analysis.get(
+                            "m1",
+                            {}
+                        ).get(
+                            "direction",
+                            "unknown",
+                        ),
+                    }
+                )
 
-    available_markets = [
-        market
+            else:
+                markets.append(
+                    {
+                        "symbol": symbol,
+                        "available": False,
+                        "bid": None,
+                        "ask": None,
+                        "spread": None,
+                        "price": None,
+                        "direction": "unknown",
+                        "status": "UNAVAILABLE",
+                        "score": 0,
+                        "max_score": 10,
+                        "m15_direction": "unknown",
+                        "m1_direction": "unknown",
+                    }
+                )
+
+        except Exception as error:
+            print(
+                f"Scanner error for {symbol}: {error}"
+            )
+
+            markets.append(
+                {
+                    "symbol": symbol,
+                    "available": False,
+                    "bid": None,
+                    "ask": None,
+                    "spread": None,
+                    "price": None,
+                    "direction": "unknown",
+                    "status": "UNAVAILABLE",
+                    "score": 0,
+                    "max_score": 10,
+                    "m15_direction": "unknown",
+                    "m1_direction": "unknown",
+                }
+            )
+
+    available_markets = sum(
+        1
         for market in markets
         if market.get("available")
-    ]
-
-    alerts = build_alerts(
-        available_markets
     )
 
-    return jsonify({
-
-        "timestamp": datetime.now().isoformat(),
-
+    return {
         "watchlist": WATCHLIST,
-
-        "total_markets": len(markets),
-
-        "available_markets": len(
-            available_markets
-        ),
-
+        "total_markets": len(WATCHLIST),
+        "available_markets": available_markets,
         "markets": markets,
-
-        "alerts": alerts,
-
-        "alert_engine": {
-            "active": True,
-            "automatic_trading": False
-        }
-    })
+        "updated_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+    }
 
 
 # ============================================================
-# ALERTS ONLY
+# ALERTS
 # ============================================================
 
-@app.route("/api/alerts")
-def alerts():
+def build_alerts():
+    scanner = build_scanner()
 
-    markets = []
+    alerts = []
 
-    for symbol in WATCHLIST:
+    for market in scanner["markets"]:
 
-        try:
+        status = market.get(
+            "status"
+        )
 
-            result = analyze_market(symbol)
-
-            if result.get("available"):
-
-                markets.append(result)
-
-        except Exception as error:
-
-            print(
-                f"Alert engine error for {symbol}:",
-                error
+        if status in (
+            "STRONG SETUP",
+            "POSSIBLE SETUP",
+        ):
+            alerts.append(
+                {
+                    "symbol": market.get(
+                        "symbol"
+                    ),
+                    "status": status,
+                    "direction": market.get(
+                        "direction"
+                    ),
+                    "score": market.get(
+                        "score",
+                        0,
+                    ),
+                    "max_score": market.get(
+                        "max_score",
+                        10,
+                    ),
+                }
             )
 
-    alert_data = build_alerts(
-        markets
-    )
-
-    return jsonify({
-
-        "timestamp": datetime.now().isoformat(),
-
-        "engine": "Twin Edge Alert Engine",
-
-        "active": True,
-
-        "automatic_trading": False,
-
-        "alerts": alert_data
-    })
+    return {
+        "alerts": alerts,
+        "updated_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+    }
 
 
 # ============================================================
-# AVAILABLE SYMBOLS
+# JOURNAL
 # ============================================================
 
-@app.route("/api/symbols")
-def symbols():
+def calculate_journal_stats():
+    with journal_lock:
+        trades = list(journal_trades)
 
-    symbols = mt5.symbols_get()
+    total_trades = len(trades)
 
-    if symbols is None:
-
-        return jsonify({
-            "symbols": []
-        })
-
-    names = [
-        symbol.name
-        for symbol in symbols
+    completed = [
+        trade
+        for trade in trades
+        if trade.get("result") in (
+            "win",
+            "loss",
+            "breakeven",
+        )
     ]
 
-    return jsonify({
-        "count": len(names),
-        "symbols": names
-    })
+    wins = sum(
+        1
+        for trade in completed
+        if trade.get("result") == "win"
+    )
+
+    losses = sum(
+        1
+        for trade in completed
+        if trade.get("result") == "loss"
+    )
+
+    breakeven = sum(
+        1
+        for trade in completed
+        if trade.get("result") == "breakeven"
+    )
+
+    pnl_values = [
+        safe_float(trade.get("pnl"))
+        for trade in completed
+    ]
+
+    total_pnl = sum(pnl_values)
+
+    average_pnl = (
+        total_pnl / len(pnl_values)
+        if pnl_values
+        else 0
+    )
+
+    win_rate = (
+        (wins / len(completed)) * 100
+        if completed
+        else 0
+    )
+
+    return {
+        "total_trades": total_trades,
+        "completed_trades": len(completed),
+        "wins": wins,
+        "losses": losses,
+        "breakeven": breakeven,
+        "win_rate": round(win_rate, 2),
+        "total_pnl": round(
+            total_pnl,
+            2,
+        ),
+        "average_pnl": round(
+            average_pnl,
+            2,
+        ),
+    }
+
+
+# ============================================================
+# ROUTES
+# ============================================================
+
+@app.route("/api/health", methods=["GET"])
+def health():
+    connected = ensure_mt5()
+
+    return jsonify(
+        {
+            "status": "online",
+            "mt5_connected": connected,
+            "automatic_trading": False,
+        }
+    )
+
+
+@app.route("/api/account", methods=["GET"])
+def account():
+    if not ensure_mt5():
+        return jsonify(
+            {
+                "error": "MT5 is not connected"
+            }
+        ), 503
+
+    account_info = mt5.account_info()
+
+    if account_info is None:
+        return jsonify(
+            {
+                "error": "Unable to read account"
+            }
+        ), 503
+
+    return jsonify(
+        {
+            "login": account_info.login,
+            "server": account_info.server,
+            "currency": account_info.currency,
+            "balance": safe_float(
+                account_info.balance
+            ),
+            "equity": safe_float(
+                account_info.equity
+            ),
+            "profit": safe_float(
+                account_info.profit
+            ),
+            "trade_allowed": bool(
+                account_info.trade_allowed
+            ),
+        }
+    )
+
+
+@app.route("/api/symbols", methods=["GET"])
+def symbols():
+    if not ensure_mt5():
+        return jsonify(
+            {
+                "symbols": [],
+                "error": "MT5 not connected",
+            }
+        ), 503
+
+    result = []
+
+    for requested in WATCHLIST:
+        broker_symbol = find_symbol(
+            requested
+        )
+
+        result.append(
+            {
+                "requested_symbol": requested,
+                "broker_symbol": broker_symbol,
+                "available": broker_symbol is not None,
+            }
+        )
+
+    return jsonify(
+        {
+            "symbols": result
+        }
+    )
+
+
+@app.route("/api/market/<symbol>", methods=["GET"])
+def market(symbol):
+    try:
+        result = build_market_analysis(
+            symbol
+        )
+
+        if not result.get("available"):
+            return jsonify(result), 404
+
+        return jsonify(result)
+
+    except Exception as error:
+        print(
+            f"Market analysis error: {error}"
+        )
+
+        return jsonify(
+            {
+                "error": str(error),
+                "symbol": symbol.upper(),
+            }
+        ), 500
+
+
+@app.route("/api/market/xauusd", methods=["GET"])
+def market_xauusd():
+    return market("XAUUSD")
+
+
+@app.route("/api/scanner", methods=["GET"])
+def scanner():
+    try:
+        return jsonify(
+            build_scanner()
+        )
+
+    except Exception as error:
+        print(
+            f"Scanner error: {error}"
+        )
+
+        return jsonify(
+            {
+                "error": str(error),
+                "watchlist": WATCHLIST,
+                "total_markets": len(
+                    WATCHLIST
+                ),
+                "available_markets": 0,
+                "markets": [],
+            }
+        ), 500
+
+
+@app.route("/api/alerts", methods=["GET"])
+def alerts():
+    try:
+        return jsonify(
+            build_alerts()
+        )
+
+    except Exception as error:
+        print(
+            f"Alerts error: {error}"
+        )
+
+        return jsonify(
+            {
+                "alerts": [],
+                "error": str(error),
+            }
+        ), 500
+
+
+@app.route("/api/journal", methods=["GET"])
+def get_journal():
+    with journal_lock:
+        trades = list(journal_trades)
+
+    return jsonify(
+        {
+            "stats": calculate_journal_stats(),
+            "trades": trades,
+        }
+    )
+
+
+@app.route("/api/journal", methods=["POST"])
+def add_journal_trade():
+    global next_trade_id
+
+    data = request.get_json(
+        silent=True
+    )
+
+    if not data:
+        return jsonify(
+            {
+                "error": "Request body is required"
+            }
+        ), 400
+
+    symbol = str(
+        data.get("symbol", "")
+    ).upper().strip()
+
+    if not symbol:
+        return jsonify(
+            {
+                "error": "Symbol is required"
+            }
+        ), 400
+
+    direction = str(
+        data.get(
+            "direction",
+            "unknown",
+        )
+    ).lower()
+
+    result = str(
+        data.get(
+            "result",
+            "open",
+        )
+    ).lower()
+
+    allowed_results = {
+        "open",
+        "win",
+        "loss",
+        "breakeven",
+    }
+
+    if result not in allowed_results:
+        return jsonify(
+            {
+                "error": (
+                    "Result must be open, "
+                    "win, loss, or breakeven"
+                )
+            }
+        ), 400
+
+    trade = {
+        "id": next_trade_id,
+        "symbol": symbol,
+        "direction": direction,
+        "entry": safe_float(
+            data.get("entry")
+        ),
+        "stop_loss": safe_float(
+            data.get("stop_loss")
+        ),
+        "take_profit": safe_float(
+            data.get("take_profit")
+        ),
+        "exit_price": safe_float(
+            data.get("exit_price")
+        ),
+        "risk_percent": safe_float(
+            data.get("risk_percent")
+        ),
+        "pnl": safe_float(
+            data.get("pnl")
+        ),
+        "result": result,
+        "notes": str(
+            data.get(
+                "notes",
+                "",
+            )
+        ),
+        "created_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+    }
+
+    with journal_lock:
+        journal_trades.append(
+            trade
+        )
+        next_trade_id += 1
+
+    return jsonify(
+        {
+            "message": "Trade added to journal",
+            "trade": trade,
+            "stats": calculate_journal_stats(),
+        }
+    ), 201
+
+
+@app.route("/api/journal/<int:trade_id>", methods=["DELETE"])
+def delete_journal_trade(trade_id):
+    with journal_lock:
+        for index, trade in enumerate(
+            journal_trades
+        ):
+            if trade.get("id") == trade_id:
+                deleted = journal_trades.pop(
+                    index
+                )
+
+                return jsonify(
+                    {
+                        "message": "Trade deleted",
+                        "trade": deleted,
+                        "stats": calculate_journal_stats(),
+                    }
+                )
+
+    return jsonify(
+        {
+            "error": "Trade not found"
+        }
+    ), 404
+
+
+# ============================================================
+# ERROR HANDLER
+# ============================================================
+
+@app.errorhandler(Exception)
+def handle_exception(error):
+    print(
+        f"Unhandled server error: {error}"
+    )
+
+    return jsonify(
+        {
+            "error": str(error)
+        }
+    ), 500
 
 
 # ============================================================
@@ -1223,28 +1803,56 @@ def symbols():
 
 if __name__ == "__main__":
 
-    print("")
     print("=" * 60)
-    print("          TWIN EDGE V5 BACKEND")
+    print("TWIN EDGE BACKEND")
     print("=" * 60)
-    print("")
-    print("Multi-Market Scanner: ACTIVE")
-    print("Alert Engine: ACTIVE")
-    print("Automatic Trading: DISABLED")
-    print("")
-    print("Server: http://localhost:5000")
-    print("Scanner: http://localhost:5000/api/scanner")
-    print("Alerts:  http://localhost:5000/api/alerts")
-    print("")
-    print("=" * 60)
-    print("")
 
-    if not connect_mt5():
+    if connect_mt5():
+        print("MT5: CONNECTED")
 
-        print("WARNING: MT5 connection failed.")
+        terminal = mt5.terminal_info()
+
+        if terminal is not None:
+            print(
+                f"Terminal: {terminal.name}"
+            )
+
+        account_info = mt5.account_info()
+
+        if account_info is not None:
+            print(
+                f"Account: {account_info.login}"
+            )
+            print(
+                f"Server: {account_info.server}"
+            )
+            print(
+                f"Balance: {account_info.balance}"
+            )
+
+    else:
+        print("MT5: NOT CONNECTED")
+        print(
+            "Make sure MetaTrader 5 is open."
+        )
+
+    print(
+        f"Watchlist: {len(WATCHLIST)} markets"
+    )
+
+    print(
+        "Automatic trading: DISABLED"
+    )
+
+    print(
+        f"Server: http://localhost:{PORT}"
+    )
+
+    print("=" * 60)
 
     app.run(
         host="0.0.0.0",
-        port=5000,
-        debug=True
+        port=PORT,
+        debug=False,
+        use_reloader=False,
     )

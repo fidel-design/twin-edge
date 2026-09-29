@@ -31,214 +31,268 @@ type Candle = {
 };
 
 type TradeLevels = {
-  entry?: number;
-  stop_loss?: number;
-  take_profit?: number;
-  risk?: number;
-  reward?: number;
-  rr?: number;
+  available: boolean;
+  entry: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
+  risk_distance: number | null;
+  reward_distance: number | null;
+  risk_reward: string;
+};
+
+type Candlestick = {
+  pattern: string;
+  direction: string;
+  strength: number;
 };
 
 type Analysis = {
-  price?: number;
-  ema20?: number;
-  ema_direction?: string;
-  rsi14?: number;
-  structure?: string;
-  structure_trend?: string;
+  available: boolean;
+  timeframe: string;
+  direction: string;
+  structure: string;
   structure_description?: string;
-  structure_confidence?: number;
-  support?: number;
-  resistance?: number;
-  direction?: string;
-  candlestick?: string;
+  confidence: number;
+  ema20: number | null;
+  ema_direction?: string;
+  rsi14: number | null;
+  support: number | null;
+  resistance: number | null;
+  candlestick: Candlestick;
+  description?: string;
 };
 
 type Setup = {
-  direction?: string;
-  score?: number;
-  max_score?: number;
-  status?: string;
-  location?: string;
-  chasing?: boolean;
-  warnings_count?: number;
-  reasons?: string[];
-  warnings?: string[];
-  trade_levels?: TradeLevels;
+  direction: string;
+  status: string;
+  score: number;
+  max_score: number;
+  reasons: string[];
+  warnings: string[];
+  location: string;
+  chasing: boolean;
 };
 
 type Market = {
   symbol: string;
-  requested_symbol?: string;
-  available?: boolean;
-  bid?: number;
-  ask?: number;
-  spread?: number;
-  direction?: string;
-  status?: string;
-  score?: number;
-  max_score?: number;
-  timestamp?: string;
-  m1?: Analysis;
-  m15?: Analysis;
-  setup?: Setup;
-  candles?: Candle[];
+  available: boolean;
+  bid: number | null;
+  ask: number | null;
+  spread: number | null;
+  price: number | null;
+  direction: string;
+  status: string;
+  score: number;
+  max_score: number;
+  m15_direction?: string;
+  m1_direction?: string;
+};
+
+type MarketDetail = {
+  symbol: string;
+  requested_symbol: string;
+  broker_symbol?: string;
+  available: boolean;
+  bid: number;
+  ask: number;
+  spread: number;
+  price: number;
+  direction: string;
+  status: string;
+  score: number;
+  max_score: number;
+  m15: Analysis;
+  m1: Analysis;
+  setup: Setup;
+  trade_levels: TradeLevels;
+  chart: {
+    timeframe: string;
+    candles: Candle[];
+    ema20: {
+      time: number;
+      value: number;
+    }[];
+  };
+  updated_at?: string;
 };
 
 type ScannerResponse = {
-  available_markets?: number;
-  total_markets?: number;
-  watchlist?: string[];
-  markets?: Market[];
-  timestamp?: string;
+  watchlist: string[];
+  total_markets: number;
+  available_markets: number;
+  markets: Market[];
+  updated_at?: string;
 };
 
 type AlertsResponse = {
-  counts?: {
-    strong_setups?: number;
-    possible_setups?: number;
-    wait?: number;
-    no_trade?: number;
-  };
+  alerts: {
+    symbol: string;
+    status: string;
+    direction: string;
+    score: number;
+    max_score: number;
+  }[];
 };
 
-function safeNumber(value: unknown, fallback = 0): number {
-  const number =
-    typeof value === "number" ? value : Number(value);
+type JournalTrade = {
+  id: number;
+  symbol: string;
+  direction: string;
+  entry: number;
+  stop_loss: number;
+  take_profit: number;
+  exit_price: number;
+  risk_percent: number;
+  pnl: number;
+  result: string;
+  notes: string;
+  created_at: string;
+};
 
-  return Number.isFinite(number) ? number : fallback;
+type JournalStats = {
+  total_trades: number;
+  completed_trades: number;
+  wins: number;
+  losses: number;
+  breakeven: number;
+  win_rate: number;
+  total_pnl: number;
+  average_pnl: number;
+};
+
+type JournalResponse = {
+  stats: JournalStats;
+  trades: JournalTrade[];
+};
+
+function safeNumber(
+  value: number | null | undefined,
+  fallback = 0
+) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : fallback;
 }
 
 function formatPrice(
-  value: unknown,
-  symbol: string
-): string {
-  const number = safeNumber(value, NaN);
+  value: number | null | undefined,
+  decimals = 5
+) {
+  if (value === null || value === undefined) return "—";
 
-  if (!Number.isFinite(number)) {
-    return "-";
-  }
-
-  if (symbol === "USDJPY") {
-    return number.toFixed(3);
-  }
-
-  if (symbol === "XAUUSD" || symbol === "BTCUSD") {
-    return number.toFixed(2);
-  }
-
-  return number.toFixed(5);
+  return safeNumber(value).toFixed(decimals);
 }
 
 function formatNumber(
-  value: unknown,
+  value: number | null | undefined,
   decimals = 2
-): string {
-  const number = safeNumber(value, NaN);
+) {
+  if (value === null || value === undefined) return "—";
 
-  if (!Number.isFinite(number)) {
-    return "-";
-  }
-
-  return number.toFixed(decimals);
+  return safeNumber(value).toFixed(decimals);
 }
 
-function safeText(
-  value: unknown,
-  fallback = "-"
-): string {
-  if (
-    value === null ||
-    value === undefined ||
-    value === ""
-  ) {
-    return fallback;
-  }
-
-  return String(value);
+function safeText(value: unknown) {
+  return value === null || value === undefined || value === ""
+    ? "—"
+    : String(value);
 }
 
-function statusClass(status?: string) {
-  const value = String(status || "").toUpperCase();
+function statusClass(status: string) {
+  switch (status) {
+    case "STRONG SETUP":
+      return "status strong";
 
-  if (value === "STRONG SETUP") {
-    return "status strong";
+    case "POSSIBLE SETUP":
+      return "status possible";
+
+    case "WAIT":
+      return "status wait";
+
+    case "NO TRADE":
+      return "status no-trade";
+
+    case "UNAVAILABLE":
+      return "status unavailable";
+
+    default:
+      return "status";
   }
-
-  if (value === "POSSIBLE SETUP") {
-    return "status possible";
-  }
-
-  if (value === "NO TRADE") {
-    return "status danger";
-  }
-
-  return "status wait";
 }
 
-function directionClass(direction?: string) {
-  const value = String(direction || "").toLowerCase();
-
-  if (value === "bullish") {
-    return "bullish";
-  }
-
-  if (value === "bearish") {
-    return "bearish";
-  }
+function directionClass(direction: string) {
+  if (direction === "bullish") return "bullish";
+  if (direction === "bearish") return "bearish";
 
   return "neutral";
 }
 
+function resultClass(result: string) {
+  if (result === "win") return "result win";
+  if (result === "loss") return "result loss";
+  if (result === "breakeven") return "result breakeven";
+
+  return "result open";
+}
+
 export default function Home() {
-  const [scanner, setScanner] =
-    useState<ScannerResponse | null>(null);
-
-  const [selectedSymbol, setSelectedSymbol] =
-    useState("XAUUSD");
-
+  const [scanner, setScanner] = useState<ScannerResponse | null>(null);
+  const [selectedSymbol, setSelectedSymbol] = useState("XAUUSD");
   const [selectedMarket, setSelectedMarket] =
-    useState<Market | null>(null);
+    useState<MarketDetail | null>(null);
 
-  const [alerts, setAlerts] =
-    useState<AlertsResponse | null>(null);
+  const [alerts, setAlerts] = useState<AlertsResponse>({
+    alerts: [],
+  });
 
-  const [loadingScanner, setLoadingScanner] =
-    useState(true);
+  const [journal, setJournal] = useState<JournalResponse>({
+    stats: {
+      total_trades: 0,
+      completed_trades: 0,
+      wins: 0,
+      losses: 0,
+      breakeven: 0,
+      win_rate: 0,
+      total_pnl: 0,
+      average_pnl: 0,
+    },
+    trades: [],
+  });
 
-  const [loadingMarket, setLoadingMarket] =
-    useState(true);
+  const [loading, setLoading] = useState(true);
+  const [marketLoading, setMarketLoading] = useState(false);
+  const [journalLoading, setJournalLoading] = useState(false);
 
-  const [scannerError, setScannerError] =
-    useState("");
+  const [scannerError, setScannerError] = useState("");
+  const [marketError, setMarketError] = useState("");
+  const [journalError, setJournalError] = useState("");
 
-  const [marketError, setMarketError] =
-    useState("");
+  const [lastRefresh, setLastRefresh] = useState("");
 
-  const [lastRefresh, setLastRefresh] =
-    useState("");
+  const [journalForm, setJournalForm] = useState({
+    symbol: "XAUUSD",
+    direction: "bullish",
+    entry: "",
+    stop_loss: "",
+    take_profit: "",
+    exit_price: "",
+    risk_percent: "2",
+    pnl: "",
+    result: "open",
+    notes: "",
+  });
 
-  const chartContainerRef =
-    useRef<HTMLDivElement | null>(null);
-
+  const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<any>(null);
 
-  const previousStrongCount =
-    useRef(0);
+  const previousStrongSetups = useRef<Set<string>>(new Set());
 
-  const firstAlertLoad =
-    useRef(true);
-
-  /*
-   * =====================================================
-   * SCANNER
-   * =====================================================
-   */
+  // ============================================================
+  // SCANNER
+  // ============================================================
 
   async function fetchScanner() {
     try {
-      setScannerError("");
-
       const response = await fetch(
         `${API}/api/scanner`,
         {
@@ -248,61 +302,44 @@ export default function Home() {
 
       if (!response.ok) {
         throw new Error(
-          `Scanner HTTP ${response.status}`
+          `Scanner request failed: ${response.status}`
         );
       }
 
-      const data: ScannerResponse =
-        await response.json();
+      const data: ScannerResponse = await response.json();
 
-      /*
-       * IMPORTANT:
-       * Only replace the current scanner data when
-       * the backend actually returned markets.
-       *
-       * This prevents a temporary empty response
-       * from making all market cards disappear.
-       */
-
+      // IMPORTANT:
+      // Never replace a working scanner with an empty response.
       if (
         Array.isArray(data.markets) &&
         data.markets.length > 0
       ) {
         setScanner(data);
+        setScannerError("");
         setLastRefresh(
           new Date().toLocaleTimeString()
         );
       }
     } catch (error) {
-      console.error(
-        "Scanner error:",
-        error
-      );
-
-      /*
-       * Do NOT clear the existing scanner.
-       * Keep the last successful data visible.
-       */
+      console.error("Scanner error:", error);
 
       setScannerError(
-        "Scanner refresh failed. Keeping the last successful data."
+        "Scanner refresh failed. Keeping the last working data."
       );
     } finally {
-      setLoadingScanner(false);
+      setLoading(false);
     }
   }
 
-  /*
-   * =====================================================
-   * SELECTED MARKET
-   * =====================================================
-   */
+  // ============================================================
+  // SELECTED MARKET
+  // ============================================================
 
   async function fetchSelectedMarket(
-    symbol: string
+    symbol = selectedSymbol
   ) {
     try {
-      setLoadingMarket(true);
+      setMarketLoading(true);
       setMarketError("");
 
       const response = await fetch(
@@ -314,11 +351,11 @@ export default function Home() {
 
       if (!response.ok) {
         throw new Error(
-          `Market HTTP ${response.status}`
+          `Market request failed: ${response.status}`
         );
       }
 
-      const data: Market =
+      const data: MarketDetail =
         await response.json();
 
       setSelectedMarket(data);
@@ -329,18 +366,16 @@ export default function Home() {
       );
 
       setMarketError(
-        `Unable to load ${symbol} details.`
+        "Could not load this market."
       );
     } finally {
-      setLoadingMarket(false);
+      setMarketLoading(false);
     }
   }
 
-  /*
-   * =====================================================
-   * ALERTS
-   * =====================================================
-   */
+  // ============================================================
+  // ALERTS
+  // ============================================================
 
   async function fetchAlerts() {
     try {
@@ -351,48 +386,14 @@ export default function Home() {
         }
       );
 
-      if (!response.ok) {
-        return;
-      }
+      if (!response.ok) return;
 
       const data: AlertsResponse =
         await response.json();
 
-      setAlerts(data);
-
-      const strongCount =
-        safeNumber(
-          data.counts?.strong_setups,
-          0
-        );
-
-      if (
-        !firstAlertLoad.current &&
-        strongCount >
-          previousStrongCount.current
-      ) {
-        try {
-          if (
-            "Notification" in window &&
-            Notification.permission ===
-              "granted"
-          ) {
-            new Notification(
-              "Twin Edge Alert",
-              {
-                body: `${strongCount} strong setup(s) detected.`,
-              }
-            );
-          }
-        } catch {
-          // Ignore notification errors.
-        }
+      if (Array.isArray(data.alerts)) {
+        setAlerts(data);
       }
-
-      previousStrongCount.current =
-        strongCount;
-
-      firstAlertLoad.current = false;
     } catch (error) {
       console.error(
         "Alerts error:",
@@ -401,125 +402,439 @@ export default function Home() {
     }
   }
 
-  /*
-   * =====================================================
-   * INITIAL LOAD
-   * =====================================================
-   */
+  // ============================================================
+  // JOURNAL
+  // ============================================================
+
+  async function fetchJournal() {
+    try {
+      setJournalError("");
+
+      const response = await fetch(
+        `${API}/api/journal`,
+        {
+          cache: "no-store",
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          `Journal request failed: ${response.status}`
+        );
+      }
+
+      const data: JournalResponse =
+        await response.json();
+
+      if (
+        data &&
+        data.stats &&
+        Array.isArray(data.trades)
+      ) {
+        setJournal(data);
+      }
+    } catch (error) {
+      console.error(
+        "Journal error:",
+        error
+      );
+
+      setJournalError(
+        "Journal could not be loaded."
+      );
+    }
+  }
+
+  async function submitJournalTrade(
+    event: React.FormEvent
+  ) {
+    event.preventDefault();
+
+    try {
+      setJournalLoading(true);
+      setJournalError("");
+
+      const payload = {
+        symbol: journalForm.symbol,
+        direction: journalForm.direction,
+        entry: Number(
+          journalForm.entry || 0
+        ),
+        stop_loss: Number(
+          journalForm.stop_loss || 0
+        ),
+        take_profit: Number(
+          journalForm.take_profit || 0
+        ),
+        exit_price: Number(
+          journalForm.exit_price || 0
+        ),
+        risk_percent: Number(
+          journalForm.risk_percent || 0
+        ),
+        pnl: Number(
+          journalForm.pnl || 0
+        ),
+        result: journalForm.result,
+        notes: journalForm.notes,
+      };
+
+      const response = await fetch(
+        `${API}/api/journal`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "Failed to add journal trade"
+        );
+      }
+
+      setJournalForm({
+        symbol: selectedSymbol,
+        direction:
+          selectedMarket?.direction ===
+          "bearish"
+            ? "bearish"
+            : "bullish",
+        entry: "",
+        stop_loss: "",
+        take_profit: "",
+        exit_price: "",
+        risk_percent: "2",
+        pnl: "",
+        result: "open",
+        notes: "",
+      });
+
+      await fetchJournal();
+    } catch (error) {
+      console.error(
+        "Journal submit error:",
+        error
+      );
+
+      setJournalError(
+        error instanceof Error
+          ? error.message
+          : "Failed to save trade."
+      );
+    } finally {
+      setJournalLoading(false);
+    }
+  }
+
+  async function deleteJournalTrade(
+    tradeId: number
+  ) {
+    try {
+      setJournalError("");
+
+      const response = await fetch(
+        `${API}/api/journal/${tradeId}`,
+        {
+          method: "DELETE",
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          "Failed to delete trade"
+        );
+      }
+
+      await fetchJournal();
+    } catch (error) {
+      console.error(
+        "Delete journal error:",
+        error
+      );
+
+      setJournalError(
+        "Could not delete that trade."
+      );
+    }
+  }
+
+  // ============================================================
+  // INITIAL LOAD
+  // ============================================================
 
   useEffect(() => {
     fetchScanner();
+    fetchSelectedMarket("XAUUSD");
     fetchAlerts();
-    fetchSelectedMarket(
-      selectedSymbol
-    );
+    fetchJournal();
 
-    /*
-     * Scanner refresh is intentionally 10 seconds.
-     * We also keep the previous successful scanner
-     * whenever a refresh returns empty data.
-     */
+    const scannerInterval =
+      setInterval(
+        fetchScanner,
+        10000
+      );
 
-    const interval = setInterval(() => {
-      fetchScanner();
-      fetchAlerts();
-    }, 10000);
+    const marketInterval =
+      setInterval(
+        () =>
+          fetchSelectedMarket(
+            selectedSymbol
+          ),
+        10000
+      );
+
+    const alertsInterval =
+      setInterval(
+        fetchAlerts,
+        10000
+      );
+
+    const journalInterval =
+      setInterval(
+        fetchJournal,
+        30000
+      );
 
     return () => {
-      clearInterval(interval);
+      clearInterval(
+        scannerInterval
+      );
+
+      clearInterval(
+        marketInterval
+      );
+
+      clearInterval(
+        alertsInterval
+      );
+
+      clearInterval(
+        journalInterval
+      );
     };
   }, []);
 
-  /*
-   * =====================================================
-   * SELECTED SYMBOL CHANGED
-   * =====================================================
-   */
+  // ============================================================
+  // ALERT NOTIFICATIONS
+  // ============================================================
 
   useEffect(() => {
-    fetchSelectedMarket(
-      selectedSymbol
-    );
-  }, [selectedSymbol]);
+    const currentStrong =
+      new Set<string>();
 
-  /*
-   * =====================================================
-   * NOTIFICATIONS
-   * =====================================================
-   */
+    alerts.alerts.forEach(
+      (alert) => {
+        if (
+          alert.status ===
+            "STRONG SETUP" ||
+          alert.score >= 8
+        ) {
+          const key =
+            `${alert.symbol}-${alert.direction}`;
 
-  useEffect(() => {
-    if ("Notification" in window) {
-      if (
-        Notification.permission ===
-        "default"
-      ) {
-        Notification.requestPermission().catch(
-          () => {}
-        );
+          currentStrong.add(key);
+
+          if (
+            !previousStrongSetups.current.has(
+              key
+            ) &&
+            typeof window !==
+              "undefined" &&
+            "Notification" in window &&
+            Notification.permission ===
+              "granted"
+          ) {
+            new Notification(
+              `Twin Edge: ${alert.symbol}`,
+              {
+                body:
+                  `${alert.status} — ` +
+                  `${alert.direction} — ` +
+                  `${alert.score}/${alert.max_score}`,
+              }
+            );
+          }
+        }
       }
+    );
+
+    previousStrongSetups.current =
+      currentStrong;
+  }, [alerts]);
+
+  // ============================================================
+  // NOTIFICATION PERMISSION
+  // ============================================================
+
+  useEffect(() => {
+    if (
+      typeof window !== "undefined" &&
+      "Notification" in window &&
+      Notification.permission ===
+        "default"
+    ) {
+      Notification.requestPermission().catch(
+        () => {}
+      );
     }
   }, []);
 
-  /*
-   * =====================================================
-   * MARKETS
-   * =====================================================
-   */
+  // ============================================================
+  // SCANNER MARKETS
+  // ============================================================
 
   const markets = useMemo(() => {
-    if (
-      !scanner ||
-      !Array.isArray(scanner.markets)
-    ) {
-      return [];
-    }
+    const source =
+      scanner?.markets || [];
 
-    /*
-     * Preserve the exact watchlist order.
-     */
+    return WATCHLIST.map(
+      (symbol) => {
+        const found =
+          source.find(
+            (market) =>
+              market.symbol === symbol
+          );
 
-    return WATCHLIST.map((symbol) => {
-      const found =
-        scanner.markets?.find(
-          (market) =>
-            String(
-              market.symbol || ""
-            ).toUpperCase() ===
-              symbol.toUpperCase() ||
-            String(
-              market.requested_symbol || ""
-            ).toUpperCase() ===
-              symbol.toUpperCase()
-        );
+        if (found) return found;
 
-      return (
-        found || {
+        return {
           symbol,
-          requested_symbol: symbol,
           available: false,
+          bid: null,
+          ask: null,
+          spread: null,
+          price: null,
+          direction: "unknown",
           status: "UNAVAILABLE",
           score: 0,
           max_score: 10,
-        }
-      );
-    });
+        };
+      }
+    );
   }, [scanner]);
 
-  /*
-   * =====================================================
-   * CHART
-   * =====================================================
-   */
+  const strongSetups =
+    markets.filter(
+      (market) =>
+        market.status ===
+        "STRONG SETUP"
+    ).length;
+
+  const possibleSetups =
+    markets.filter(
+      (market) =>
+        market.status ===
+        "POSSIBLE SETUP"
+    ).length;
+
+  const waitingMarkets =
+    markets.filter(
+      (market) =>
+        market.status === "WAIT"
+    ).length;
+
+  const noTradeMarkets =
+    markets.filter(
+      (market) =>
+        market.status ===
+          "NO TRADE" ||
+        market.status ===
+          "UNAVAILABLE"
+    ).length;
+
+  // ============================================================
+  // MARKET SELECTION
+  // ============================================================
+
+  async function selectMarket(
+    symbol: string
+  ) {
+    setSelectedSymbol(symbol);
+
+    setJournalForm(
+      (previous) => ({
+        ...previous,
+        symbol,
+      })
+    );
+
+    await fetchSelectedMarket(
+      symbol
+    );
+  }
+
+  // ============================================================
+  // AUTO-FILL JOURNAL FROM SETUP
+  // ============================================================
+
+  function useCurrentSetup() {
+    if (!selectedMarket) return;
+
+    const levels =
+      selectedMarket.trade_levels;
+
+    setJournalForm({
+      symbol:
+        selectedMarket.symbol,
+
+      direction:
+        selectedMarket.direction ===
+        "bearish"
+          ? "bearish"
+          : "bullish",
+
+      entry:
+        levels.entry !== null
+          ? String(levels.entry)
+          : "",
+
+      stop_loss:
+        levels.stop_loss !== null
+          ? String(
+              levels.stop_loss
+            )
+          : "",
+
+      take_profit:
+        levels.take_profit !== null
+          ? String(
+              levels.take_profit
+            )
+          : "",
+
+      exit_price: "",
+
+      risk_percent: "2",
+
+      pnl: "",
+
+      result: "open",
+
+      notes:
+        `Twin Edge setup — ` +
+        `${selectedMarket.status} ` +
+        `${selectedMarket.score}/` +
+        `${selectedMarket.max_score}`,
+    });
+  }
+
+  // ============================================================
+  // CHART
+  // ============================================================
 
   useEffect(() => {
-    if (!chartContainerRef.current) {
-      return;
-    }
-
     if (
-      !selectedMarket?.candles ||
-      selectedMarket.candles.length === 0
+      !chartContainerRef.current ||
+      !selectedMarket ||
+      selectedMarket.chart.candles
+        .length === 0
     ) {
       return;
     }
@@ -529,47 +844,48 @@ export default function Home() {
 
     container.innerHTML = "";
 
-    const chart = createChart(
-      container,
-      {
+    const chart =
+      createChart(container, {
         width:
           container.clientWidth,
+
         height: 430,
 
         layout: {
           background: {
             type: ColorType.Solid,
-            color: "#09090b",
+            color: "#0b1220",
           },
-          textColor: "#a1a1aa",
+
+          textColor: "#cbd5e1",
         },
 
         grid: {
           vertLines: {
-            color: "#18181b",
+            color: "#182235",
           },
-          horzLines: {
-            color: "#18181b",
-          },
-        },
 
-        crosshair: {
-          mode: 1,
+          horzLines: {
+            color: "#182235",
+          },
         },
 
         rightPriceScale: {
-          borderColor: "#27272a",
+          borderColor:
+            "#263247",
         },
 
         timeScale: {
-          borderColor: "#27272a",
+          borderColor:
+            "#263247",
+
           timeVisible: true,
           secondsVisible: false,
         },
-      }
-    );
+      });
 
-    chartRef.current = chart;
+    chartRef.current =
+      chart;
 
     const candleSeries =
       chart.addSeries(
@@ -578,63 +894,15 @@ export default function Home() {
           upColor: "#22c55e",
           downColor: "#ef4444",
           borderVisible: false,
-          wickUpColor: "#22c55e",
-          wickDownColor: "#ef4444",
+          wickUpColor:
+            "#22c55e",
+          wickDownColor:
+            "#ef4444",
         }
       );
 
-    const candles = [
-      ...selectedMarket.candles,
-    ].sort(
-      (a, b) => a.time - b.time
-    );
-
     candleSeries.setData(
-      candles.map((candle) => ({
-        time: candle.time as any,
-        open: candle.open,
-        high: candle.high,
-        low: candle.low,
-        close: candle.close,
-      }))
-    );
-
-    /*
-     * EMA20
-     */
-
-    const emaPeriod = 20;
-
-    const multiplier =
-      2 / (emaPeriod + 1);
-
-    let ema: number | null = null;
-
-    const emaData: {
-      time: any;
-      value: number;
-    }[] = [];
-
-    candles.forEach(
-      (candle, index) => {
-        if (index === 0) {
-          ema = candle.close;
-        } else {
-          ema =
-            (candle.close -
-              (ema ?? candle.close)) *
-              multiplier +
-            (ema ?? candle.close);
-        }
-
-        if (ema !== null) {
-          emaData.push({
-            time:
-              candle.time as any,
-            value: ema,
-          });
-        }
-      }
+      selectedMarket.chart.candles
     );
 
     const emaSeries =
@@ -642,79 +910,60 @@ export default function Home() {
         LineSeries,
         {
           lineWidth: 2,
-          title: "EMA20",
         }
       );
 
     emaSeries.setData(
-      emaData
+      selectedMarket.chart.ema20
     );
 
-    /*
-     * Horizontal price level helper
-     */
-
-    function addLevel(
-      value: unknown,
+    function addPriceLine(
+      price: number | null,
       title: string
     ) {
-      const price =
-        safeNumber(value, NaN);
-
-      if (!Number.isFinite(price)) {
+      if (
+        price === null ||
+        !Number.isFinite(price)
+      ) {
         return;
       }
 
-      const lineSeries =
-        chart.addSeries(
-          LineSeries,
-          {
-            lineWidth: 1,
-            title,
-          }
-        );
-
-      lineSeries.setData([
+      candleSeries.createPriceLine(
         {
-          time:
-            candles[0].time as any,
-          value: price,
-        },
-        {
-          time:
-            candles[
-              candles.length - 1
-            ].time as any,
-          value: price,
-        },
-      ]);
+          price,
+          title,
+          lineWidth: 1,
+          axisLabelVisible: true,
+          lineVisible: true,
+        }
+      );
     }
 
-    addLevel(
-      selectedMarket.m1?.support,
+    addPriceLine(
+      selectedMarket.m1.support,
       "Support"
     );
 
-    addLevel(
-      selectedMarket.m1?.resistance,
+    addPriceLine(
+      selectedMarket.m1.resistance,
       "Resistance"
     );
 
-    addLevel(
-      selectedMarket.setup
-        ?.trade_levels?.entry,
+    addPriceLine(
+      selectedMarket.trade_levels
+        .entry,
       "Entry"
     );
 
-    addLevel(
-      selectedMarket.setup
-        ?.trade_levels?.stop_loss,
+    addPriceLine(
+      selectedMarket.trade_levels
+        .stop_loss,
       "SL"
     );
 
-    addLevel(
-      selectedMarket.setup
-        ?.trade_levels?.take_profit,
+    addPriceLine(
+      selectedMarket.trade_levels
+        .take_profit,
       "TP"
     );
 
@@ -723,16 +972,15 @@ export default function Home() {
     const resizeObserver =
       new ResizeObserver(() => {
         if (
-          !chartContainerRef.current
+          chartContainerRef.current
         ) {
-          return;
+          chart.applyOptions({
+            width:
+              chartContainerRef
+                .current
+                .clientWidth,
+          });
         }
-
-        chart.applyOptions({
-          width:
-            chartContainerRef.current
-              .clientWidth,
-        });
       });
 
     resizeObserver.observe(
@@ -746,1044 +994,198 @@ export default function Home() {
     };
   }, [selectedMarket]);
 
-  /*
-   * =====================================================
-   * COUNTS
-   * =====================================================
-   */
-
-  const strongCount =
-    safeNumber(
-      alerts?.counts
-        ?.strong_setups,
-      markets.filter(
-        (market) =>
-          String(
-            market.status
-          ).toUpperCase() ===
-          "STRONG SETUP"
-      ).length
-    );
-
-  const possibleCount =
-    safeNumber(
-      alerts?.counts
-        ?.possible_setups,
-      markets.filter(
-        (market) =>
-          String(
-            market.status
-          ).toUpperCase() ===
-          "POSSIBLE SETUP"
-      ).length
-    );
-
-  const waitCount =
-    safeNumber(
-      alerts?.counts?.wait,
-      markets.filter(
-        (market) =>
-          String(
-            market.status
-          ).toUpperCase() ===
-          "WAIT"
-      ).length
-    );
-
-  const noTradeCount =
-    safeNumber(
-      alerts?.counts?.no_trade,
-      markets.filter(
-        (market) =>
-          String(
-            market.status
-          ).toUpperCase() ===
-          "NO TRADE"
-      ).length
-    );
-
-  /*
-   * =====================================================
-   * RENDER
-   * =====================================================
-   */
+  // ============================================================
+  // UI
+  // ============================================================
 
   return (
-    <main className="min-h-screen bg-zinc-950 text-white">
-      <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8">
-
-        {/* HEADER */}
-
-        <header className="mb-6 flex flex-col gap-4 border-b border-zinc-800 pb-5 lg:flex-row lg:items-center lg:justify-between">
-
-          <div>
-            <div className="flex items-center gap-3">
-
-              <h1 className="text-3xl font-black tracking-tight">
-                TWIN EDGE
-              </h1>
-
-              <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-bold text-emerald-400">
-                V5
-              </span>
-
-            </div>
-
-            <p className="mt-1 text-sm text-zinc-400">
-              Multi-market trading analysis
-              dashboard
-            </p>
-          </div>
-
-          <div className="flex items-center gap-4">
-
-            <div className="flex items-center gap-2 text-sm text-zinc-400">
-              <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-emerald-400" />
-              LIVE
-            </div>
-
-            <div className="text-xs text-zinc-500">
-              Updated{" "}
-              {lastRefresh || "-"}
-            </div>
-
-          </div>
-
-        </header>
-
-        {/* SCANNER ERROR */}
-
-        {scannerError && (
-          <div className="mb-5 rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-4 text-sm text-yellow-300">
-            {scannerError}
-          </div>
-        )}
-
-        {/* SUMMARY */}
-
-        <section className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4">
-
-          <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4">
-            <div className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-              Strong setups
-            </div>
-
-            <div className="mt-2 text-3xl font-black text-emerald-400">
-              {strongCount}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-yellow-500/20 bg-yellow-500/5 p-4">
-            <div className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-              Possible setups
-            </div>
-
-            <div className="mt-2 text-3xl font-black text-yellow-400">
-              {possibleCount}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
-            <div className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-              Waiting
-            </div>
-
-            <div className="mt-2 text-3xl font-black text-zinc-300">
-              {waitCount}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4">
-            <div className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-              No trade
-            </div>
-
-            <div className="mt-2 text-3xl font-black text-red-400">
-              {noTradeCount}
-            </div>
-          </div>
-
-        </section>
-
-        {/* MARKET SCANNER */}
-
-        <section className="mb-6">
-
-          <div className="mb-3 flex items-center justify-between">
-
-            <div>
-              <h2 className="text-xl font-bold">
-                Market Scanner
-              </h2>
-
-              <p className="text-sm text-zinc-500">
-                {loadingScanner
-                  ? "Scanning markets..."
-                  : `${markets.length} markets loaded`}
-              </p>
-            </div>
-
-            <div className="text-xs text-zinc-500">
-              {scanner?.available_markets ??
-                0}
-              /
-              {scanner?.total_markets ??
-                WATCHLIST.length}{" "}
-              available
-            </div>
-
-          </div>
-
-          {loadingScanner &&
-          markets.length === 0 ? (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-
-              {WATCHLIST.map(
-                (symbol) => (
-                  <div
-                    key={symbol}
-                    className="h-40 animate-pulse rounded-2xl border border-zinc-800 bg-zinc-900/50"
-                  />
-                )
-              )}
-
-            </div>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-
-              {markets.map(
-                (market) => {
-                  const symbol =
-                    market.requested_symbol ||
-                    market.symbol ||
-                    "UNKNOWN";
-
-                  const isSelected =
-                    selectedSymbol.toUpperCase() ===
-                    symbol.toUpperCase();
-
-                  const score =
-                    safeNumber(
-                      market.score,
-                      0
-                    );
-
-                  const maxScore =
-                    safeNumber(
-                      market.max_score,
-                      10
-                    );
-
-                  return (
-                    <button
-                      key={symbol}
-                      type="button"
-                      onClick={() =>
-                        setSelectedSymbol(
-                          symbol
-                        )
-                      }
-                      className={`text-left transition ${
-                        isSelected
-                          ? "scale-[1.01]"
-                          : "hover:scale-[1.01]"
-                      }`}
-                    >
-
-                      <div
-                        className={`rounded-2xl border p-4 ${
-                          isSelected
-                            ? "border-white/30 bg-zinc-800"
-                            : "border-zinc-800 bg-zinc-900/60 hover:border-zinc-700"
-                        }`}
-                      >
-
-                        <div className="flex items-start justify-between gap-3">
-
-                          <div>
-                            <div className="text-lg font-black">
-                              {symbol}
-                            </div>
-
-                            <div className="mt-1 text-xs text-zinc-500">
-                              {market.available
-                                ? "Market available"
-                                : "Unavailable"}
-                            </div>
-                          </div>
-
-                          <span
-                            className={statusClass(
-                              market.status
-                            )}
-                          >
-                            {safeText(
-                              market.status,
-                              "WAIT"
-                            )}
-                          </span>
-
-                        </div>
-
-                        <div className="mt-5 grid grid-cols-2 gap-3">
-
-                          <div>
-                            <div className="text-[10px] uppercase tracking-wider text-zinc-500">
-                              Bid
-                            </div>
-
-                            <div className="mt-1 font-mono text-sm">
-                              {formatPrice(
-                                market.bid,
-                                symbol
-                              )}
-                            </div>
-                          </div>
-
-                          <div>
-                            <div className="text-[10px] uppercase tracking-wider text-zinc-500">
-                              Ask
-                            </div>
-
-                            <div className="mt-1 font-mono text-sm">
-                              {formatPrice(
-                                market.ask,
-                                symbol
-                              )}
-                            </div>
-                          </div>
-
-                        </div>
-
-                        <div className="mt-4 flex items-center justify-between">
-
-                          <span className="text-xs text-zinc-500">
-                            Score
-                          </span>
-
-                          <span
-                            className={`font-bold ${
-                              score >= 8
-                                ? "text-emerald-400"
-                                : score >= 6
-                                ? "text-yellow-400"
-                                : "text-zinc-300"
-                            }`}
-                          >
-                            {score}/
-                            {maxScore}
-                          </span>
-
-                        </div>
-
-                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-zinc-800">
-
-                          <div
-                            className="h-full rounded-full bg-white transition-all"
-                            style={{
-                              width: `${Math.min(
-                                100,
-                                Math.max(
-                                  0,
-                                  (score /
-                                    maxScore) *
-                                    100
-                                )
-                              )}%`,
-                            }}
-                          />
-
-                        </div>
-
-                      </div>
-
-                    </button>
-                  );
-                }
-              )}
-
-            </div>
-          )}
-
-        </section>
-
-        {/* SELECTED MARKET */}
-
-        <section className="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
-
-          {/* CHART */}
-
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
-
-            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-
-              <div>
-
-                <div className="flex items-center gap-3">
-
-                  <h2 className="text-2xl font-black">
-                    {selectedSymbol}
-                  </h2>
-
-                  {selectedMarket && (
-                    <span
-                      className={statusClass(
-                        selectedMarket.status
-                      )}
-                    >
-                      {safeText(
-                        selectedMarket.status,
-                        "WAIT"
-                      )}
-                    </span>
-                  )}
-
-                </div>
-
-                <div className="mt-1 text-xs text-zinc-500">
-                  M1 execution chart
-                </div>
-
-              </div>
-
-              {selectedMarket && (
-                <div className="flex gap-5 text-right">
-
-                  <div>
-                    <div className="text-[10px] uppercase text-zinc-500">
-                      Bid
-                    </div>
-
-                    <div className="font-mono text-sm">
-                      {formatPrice(
-                        selectedMarket.bid,
-                        selectedSymbol
-                      )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-[10px] uppercase text-zinc-500">
-                      Ask
-                    </div>
-
-                    <div className="font-mono text-sm">
-                      {formatPrice(
-                        selectedMarket.ask,
-                        selectedSymbol
-                      )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-[10px] uppercase text-zinc-500">
-                      Spread
-                    </div>
-
-                    <div className="font-mono text-sm">
-                      {formatNumber(
-                        selectedMarket.spread,
-                        5
-                      )}
-                    </div>
-                  </div>
-
-                </div>
-              )}
-
-            </div>
-
-            {marketError && (
-              <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
-                {marketError}
-              </div>
-            )}
-
-            <div
-              ref={chartContainerRef}
-              className="min-h-[430px] overflow-hidden rounded-xl border border-zinc-800"
-            />
-
-            {loadingMarket && (
-              <div className="mt-3 text-xs text-zinc-500">
-                Updating{" "}
-                {selectedSymbol}...
-              </div>
-            )}
-
-          </div>
-
-          {/* ANALYSIS */}
-
-          <div className="space-y-6">
-
-            {/* M15 */}
-
-            <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5">
-
-              <div className="mb-4">
-                <div className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-                  Higher timeframe
-                </div>
-
-                <h3 className="mt-1 text-xl font-black">
-                  M15 Context
-                </h3>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    Direction
-                  </div>
-
-                  <div
-                    className={`mt-1 font-bold ${directionClass(
-                      selectedMarket
-                        ?.m15?.direction
-                    )}`}
-                  >
-                    {safeText(
-                      selectedMarket
-                        ?.m15?.direction
-                    ).toUpperCase()}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    Structure
-                  </div>
-
-                  <div className="mt-1 font-bold">
-                    {safeText(
-                      selectedMarket
-                        ?.m15
-                        ?.structure_description
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    EMA20
-                  </div>
-
-                  <div className="mt-1 font-mono">
-                    {formatPrice(
-                      selectedMarket
-                        ?.m15?.ema20,
-                      selectedSymbol
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    RSI14
-                  </div>
-
-                  <div className="mt-1 font-mono">
-                    {formatNumber(
-                      selectedMarket
-                        ?.m15?.rsi14
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    Structure confidence
-                  </div>
-
-                  <div className="mt-1 font-bold">
-                    {formatNumber(
-                      selectedMarket
-                        ?.m15
-                        ?.structure_confidence
-                    )}
-                    %
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    Trend
-                  </div>
-
-                  <div className="mt-1 font-bold">
-                    {safeText(
-                      selectedMarket
-                        ?.m15
-                        ?.structure_trend
-                    )}
-                  </div>
-                </div>
-
-              </div>
-
-            </div>
-
-            {/* M1 */}
-
-            <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5">
-
-              <div className="mb-4">
-
-                <div className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-                  Execution timeframe
-                </div>
-
-                <h3 className="mt-1 text-xl font-black">
-                  M1 Execution
-                </h3>
-
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    Direction
-                  </div>
-
-                  <div
-                    className={`mt-1 font-bold ${directionClass(
-                      selectedMarket
-                        ?.m1?.direction
-                    )}`}
-                  >
-                    {safeText(
-                      selectedMarket
-                        ?.m1?.direction
-                    ).toUpperCase()}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    Structure
-                  </div>
-
-                  <div className="mt-1 font-bold">
-                    {safeText(
-                      selectedMarket
-                        ?.m1
-                        ?.structure_description
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    EMA20
-                  </div>
-
-                  <div className="mt-1 font-mono">
-                    {formatPrice(
-                      selectedMarket
-                        ?.m1?.ema20,
-                      selectedSymbol
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    RSI14
-                  </div>
-
-                  <div className="mt-1 font-mono">
-                    {formatNumber(
-                      selectedMarket
-                        ?.m1?.rsi14
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    Support
-                  </div>
-
-                  <div className="mt-1 font-mono">
-                    {formatPrice(
-                      selectedMarket
-                        ?.m1?.support,
-                      selectedSymbol
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    Resistance
-                  </div>
-
-                  <div className="mt-1 font-mono">
-                    {formatPrice(
-                      selectedMarket
-                        ?.m1?.resistance,
-                      selectedSymbol
-                    )}
-                  </div>
-                </div>
-
-              </div>
-
-            </div>
-
-            {/* SETUP */}
-
-            <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5">
-
-              <div className="mb-4 flex items-center justify-between">
-
-                <div>
-
-                  <div className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-                    Twin Edge decision engine
-                  </div>
-
-                  <h3 className="mt-1 text-xl font-black">
-                    Setup
-                  </h3>
-
-                </div>
-
-                <div className="text-right">
-
-                  <div className="text-2xl font-black">
-                    {safeNumber(
-                      selectedMarket
-                        ?.setup?.score,
-                      safeNumber(
-                        selectedMarket?.score,
-                        0
-                      )
-                    )}
-                    /10
-                  </div>
-
-                </div>
-
-              </div>
-
-              <div className="mb-4">
-
-                <span
-                  className={statusClass(
-                    selectedMarket
-                      ?.setup?.status ||
-                      selectedMarket?.status
-                  )}
-                >
-                  {safeText(
-                    selectedMarket
-                      ?.setup?.status ||
-                      selectedMarket?.status
-                  )}
-                </span>
-
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    Direction
-                  </div>
-
-                  <div
-                    className={`mt-1 font-bold ${directionClass(
-                      selectedMarket
-                        ?.setup?.direction
-                    )}`}
-                  >
-                    {safeText(
-                      selectedMarket
-                        ?.setup?.direction
-                    ).toUpperCase()}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    Location
-                  </div>
-
-                  <div className="mt-1 font-bold">
-                    {safeText(
-                      selectedMarket
-                        ?.setup?.location
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    Chasing
-                  </div>
-
-                  <div className="mt-1 font-bold">
-                    {selectedMarket
-                      ?.setup?.chasing
-                      ? "YES"
-                      : "NO"}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-zinc-500">
-                    Warnings
-                  </div>
-
-                  <div className="mt-1 font-bold">
-                    {safeNumber(
-                      selectedMarket
-                        ?.setup
-                        ?.warnings_count,
-                      0
-                    )}
-                  </div>
-                </div>
-
-              </div>
-
-              {!!selectedMarket
-                ?.setup
-                ?.reasons
-                ?.length && (
-                <div className="mt-5">
-
-                  <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-                    Reasons
-                  </div>
-
-                  <div className="space-y-2">
-
-                    {selectedMarket.setup.reasons.map(
-                      (reason, index) => (
-                        <div
-                          key={index}
-                          className="rounded-lg border border-emerald-500/10 bg-emerald-500/5 px-3 py-2 text-sm text-zinc-300"
-                        >
-                          ✓ {reason}
-                        </div>
-                      )
-                    )}
-
-                  </div>
-
-                </div>
-              )}
-
-              {!!selectedMarket
-                ?.setup
-                ?.warnings
-                ?.length && (
-                <div className="mt-5">
-
-                  <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-                    Warnings
-                  </div>
-
-                  <div className="space-y-2">
-
-                    {selectedMarket.setup.warnings.map(
-                      (warning, index) => (
-                        <div
-                          key={index}
-                          className="rounded-lg border border-yellow-500/10 bg-yellow-500/5 px-3 py-2 text-sm text-yellow-200"
-                        >
-                          ⚠ {warning}
-                        </div>
-                      )
-                    )}
-
-                  </div>
-
-                </div>
-              )}
-
-            </div>
-
-            {/* TRADE LEVELS */}
-
-            <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5">
-
-              <div className="mb-4">
-
-                <div className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-                  Risk framework
-                </div>
-
-                <h3 className="mt-1 text-xl font-black">
-                  Trade Levels
-                </h3>
-
-              </div>
-
-              <div className="grid grid-cols-3 gap-3">
-
-                <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
-
-                  <div className="text-[10px] uppercase tracking-wider text-zinc-500">
-                    Entry
-                  </div>
-
-                  <div className="mt-2 font-mono text-sm font-bold">
-                    {formatPrice(
-                      selectedMarket
-                        ?.setup
-                        ?.trade_levels
-                        ?.entry,
-                      selectedSymbol
-                    )}
-                  </div>
-
-                </div>
-
-                <div className="rounded-xl border border-red-500/10 bg-red-500/5 p-3">
-
-                  <div className="text-[10px] uppercase tracking-wider text-zinc-500">
-                    Stop Loss
-                  </div>
-
-                  <div className="mt-2 font-mono text-sm font-bold text-red-300">
-                    {formatPrice(
-                      selectedMarket
-                        ?.setup
-                        ?.trade_levels
-                        ?.stop_loss,
-                      selectedSymbol
-                    )}
-                  </div>
-
-                </div>
-
-                <div className="rounded-xl border border-emerald-500/10 bg-emerald-500/5 p-3">
-
-                  <div className="text-[10px] uppercase tracking-wider text-zinc-500">
-                    Take Profit
-                  </div>
-
-                  <div className="mt-2 font-mono text-sm font-bold text-emerald-300">
-                    {formatPrice(
-                      selectedMarket
-                        ?.setup
-                        ?.trade_levels
-                        ?.take_profit,
-                      selectedSymbol
-                    )}
-                  </div>
-
-                </div>
-
-              </div>
-
-              <div className="mt-4 flex justify-between text-xs text-zinc-500">
-
-                <span>
-                  Risk:{" "}
-                  {formatNumber(
-                    selectedMarket
-                      ?.setup
-                      ?.trade_levels
-                      ?.risk
-                  )}
-                </span>
-
-                <span>
-                  Reward:{" "}
-                  {formatNumber(
-                    selectedMarket
-                      ?.setup
-                      ?.trade_levels
-                      ?.reward
-                  )}
-                </span>
-
-                <span>
-                  RR:{" "}
-                  {formatNumber(
-                    selectedMarket
-                      ?.setup
-                      ?.trade_levels
-                      ?.rr
-                  )}
-                </span>
-
-              </div>
-
-            </div>
-
-            {/* CANDLESTICK */}
-
-            <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5">
-
-              <div className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-                Candlestick confirmation
-              </div>
-
-              <div className="mt-2 text-lg font-bold">
-                {safeText(
-                  selectedMarket
-                    ?.m1?.candlestick,
-                  "No confirmation"
-                )}
-              </div>
-
-            </div>
-
-          </div>
-
-        </section>
-
-        {/* FOOTER */}
-
-        <footer className="mt-8 border-t border-zinc-800 pt-5 text-center text-xs text-zinc-600">
-          Twin Edge V5 • Analysis engine only • Automatic trading is disabled
-        </footer>
-
-      </div>
-
+    <main className="page">
       <style jsx global>{`
-        .status {
-          display: inline-flex;
+        * {
+          box-sizing: border-box;
+        }
+
+        body {
+          margin: 0;
+          background: #050b16;
+          color: #e5e7eb;
+          font-family:
+            Arial,
+            Helvetica,
+            sans-serif;
+        }
+
+        button,
+        input,
+        select,
+        textarea {
+          font: inherit;
+        }
+
+        .page {
+          min-height: 100vh;
+          background:
+            radial-gradient(
+              circle at top right,
+              rgba(37, 99, 235, 0.13),
+              transparent 35%
+            ),
+            #050b16;
+          padding: 24px;
+        }
+
+        .container {
+          max-width: 1500px;
+          margin: 0 auto;
+        }
+
+        .header {
+          display: flex;
+          justify-content: space-between;
           align-items: center;
-          border-radius: 9999px;
-          padding: 4px 9px;
-          font-size: 10px;
+          gap: 20px;
+          margin-bottom: 24px;
+        }
+
+        .brand h1 {
+          margin: 0;
+          font-size: 30px;
+          letter-spacing: -1px;
+        }
+
+        .brand p {
+          margin: 6px 0 0;
+          color: #94a3b8;
+        }
+
+        .online {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: #86efac;
+          font-size: 14px;
+        }
+
+        .dot {
+          width: 9px;
+          height: 9px;
+          border-radius: 50%;
+          background: #22c55e;
+          box-shadow:
+            0 0 12px
+            rgba(34, 197, 94, 0.7);
+        }
+
+        .summary {
+          display: grid;
+          grid-template-columns:
+            repeat(4, 1fr);
+          gap: 14px;
+          margin-bottom: 20px;
+        }
+
+        .summaryCard {
+          background: #0b1220;
+          border: 1px solid #1e293b;
+          border-radius: 14px;
+          padding: 18px;
+        }
+
+        .summaryCard span {
+          display: block;
+          color: #94a3b8;
+          font-size: 13px;
+          margin-bottom: 8px;
+        }
+
+        .summaryCard strong {
+          font-size: 28px;
+        }
+
+        .scanner {
+          background: #0b1220;
+          border: 1px solid #1e293b;
+          border-radius: 16px;
+          padding: 18px;
+          margin-bottom: 20px;
+        }
+
+        .sectionHeader {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 15px;
+          margin-bottom: 16px;
+        }
+
+        .sectionHeader h2 {
+          margin: 0;
+          font-size: 19px;
+        }
+
+        .refresh {
+          color: #64748b;
+          font-size: 12px;
+        }
+
+        .scannerGrid {
+          display: grid;
+          grid-template-columns:
+            repeat(3, 1fr);
+          gap: 12px;
+        }
+
+        .marketCard {
+          border: 1px solid #1e293b;
+          background: #080f1d;
+          border-radius: 12px;
+          padding: 15px;
+          cursor: pointer;
+          transition: 0.15s ease;
+        }
+
+        .marketCard:hover {
+          border-color: #475569;
+          transform: translateY(-1px);
+        }
+
+        .marketCard.selected {
+          border-color: #60a5fa;
+          box-shadow:
+            0 0 0 1px
+            rgba(96, 165, 250, 0.15);
+        }
+
+        .marketTop {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 10px;
+          margin-bottom: 12px;
+        }
+
+        .symbol {
           font-weight: 800;
-          letter-spacing: 0.05em;
+          font-size: 17px;
+        }
+
+        .price {
+          font-size: 16px;
+          font-weight: 700;
+        }
+
+        .marketBottom {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          color: #94a3b8;
+          font-size: 12px;
+        }
+
+        .direction {
           text-transform: uppercase;
-          white-space: nowrap;
-        }
-
-        .status.strong {
-          color: #4ade80;
-          background: rgba(34, 197, 94, 0.1);
-          border: 1px solid rgba(34, 197, 94, 0.2);
-        }
-
-        .status.possible {
-          color: #facc15;
-          background: rgba(250, 204, 21, 0.1);
-          border: 1px solid rgba(250, 204, 21, 0.2);
-        }
-
-        .status.wait {
-          color: #a1a1aa;
-          background: rgba(161, 161, 170, 0.08);
-          border: 1px solid rgba(161, 161, 170, 0.15);
-        }
-
-        .status.danger {
-          color: #f87171;
-          background: rgba(248, 113, 113, 0.1);
-          border: 1px solid rgba(248, 113, 113, 0.2);
+          font-size: 11px;
+          font-weight: 800;
         }
 
         .bullish {
@@ -1795,9 +1197,1668 @@ export default function Home() {
         }
 
         .neutral {
-          color: #a1a1aa;
+          color: #94a3b8;
+        }
+
+        .status {
+          display: inline-flex;
+          align-items: center;
+          border-radius: 999px;
+          padding: 5px 9px;
+          font-size: 10px;
+          font-weight: 800;
+          letter-spacing: 0.2px;
+          background: #1e293b;
+          color: #cbd5e1;
+        }
+
+        .status.strong {
+          background: rgba(
+            34,
+            197,
+            94,
+            0.12
+          );
+          color: #86efac;
+        }
+
+        .status.possible {
+          background: rgba(
+            59,
+            130,
+            246,
+            0.12
+          );
+          color: #93c5fd;
+        }
+
+        .status.wait {
+          background: rgba(
+            234,
+            179,
+            8,
+            0.12
+          );
+          color: #fde047;
+        }
+
+        .status.no-trade,
+        .status.unavailable {
+          background: rgba(
+            148,
+            163,
+            184,
+            0.1
+          );
+          color: #94a3b8;
+        }
+
+        .mainGrid {
+          display: grid;
+          grid-template-columns:
+            minmax(0, 2fr)
+            minmax(340px, 1fr);
+          gap: 20px;
+          margin-bottom: 20px;
+        }
+
+        .panel {
+          background: #0b1220;
+          border: 1px solid #1e293b;
+          border-radius: 16px;
+          padding: 18px;
+        }
+
+        .chartPanel {
+          min-width: 0;
+        }
+
+        .marketTitle {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          gap: 15px;
+          margin-bottom: 16px;
+        }
+
+        .marketTitle h2 {
+          margin: 0;
+          font-size: 23px;
+        }
+
+        .marketTitle p {
+          margin: 5px 0 0;
+          color: #64748b;
+          font-size: 12px;
+        }
+
+        .chart {
+          width: 100%;
+          min-height: 430px;
+          border-radius: 12px;
+          overflow: hidden;
+          border: 1px solid #172033;
+        }
+
+        .detailGrid {
+          display: grid;
+          grid-template-columns:
+            repeat(2, 1fr);
+          gap: 12px;
+          margin-top: 15px;
+        }
+
+        .detailCard {
+          background: #080f1d;
+          border: 1px solid #1e293b;
+          border-radius: 12px;
+          padding: 14px;
+        }
+
+        .detailCard h3 {
+          margin: 0 0 12px;
+          font-size: 14px;
+        }
+
+        .detailRow {
+          display: flex;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 6px 0;
+          border-bottom: 1px solid
+            rgba(30, 41, 59, 0.65);
+          font-size: 12px;
+        }
+
+        .detailRow:last-child {
+          border-bottom: none;
+        }
+
+        .detailRow span:first-child {
+          color: #64748b;
+        }
+
+        .scoreBox {
+          text-align: center;
+          padding: 15px;
+          background: #080f1d;
+          border: 1px solid #1e293b;
+          border-radius: 12px;
+          margin-bottom: 12px;
+        }
+
+        .scoreBox strong {
+          display: block;
+          font-size: 34px;
+        }
+
+        .scoreBox span {
+          color: #94a3b8;
+          font-size: 12px;
+        }
+
+        .list {
+          margin: 0;
+          padding-left: 18px;
+          color: #cbd5e1;
+          font-size: 12px;
+          line-height: 1.8;
+        }
+
+        .warning {
+          color: #fbbf24;
+        }
+
+        .reason {
+          color: #86efac;
+        }
+
+        .levels {
+          display: grid;
+          grid-template-columns:
+            repeat(3, 1fr);
+          gap: 8px;
+          margin-top: 12px;
+        }
+
+        .level {
+          background: #080f1d;
+          border: 1px solid #1e293b;
+          border-radius: 10px;
+          padding: 10px;
+        }
+
+        .level span {
+          display: block;
+          color: #64748b;
+          font-size: 10px;
+          margin-bottom: 5px;
+        }
+
+        .level strong {
+          font-size: 13px;
+        }
+
+        .journal {
+          background: #0b1220;
+          border: 1px solid #1e293b;
+          border-radius: 16px;
+          padding: 18px;
+          margin-bottom: 20px;
+        }
+
+        .journalStats {
+          display: grid;
+          grid-template-columns:
+            repeat(5, 1fr);
+          gap: 10px;
+          margin-bottom: 18px;
+        }
+
+        .journalStat {
+          background: #080f1d;
+          border: 1px solid #1e293b;
+          border-radius: 11px;
+          padding: 13px;
+        }
+
+        .journalStat span {
+          display: block;
+          color: #64748b;
+          font-size: 10px;
+          margin-bottom: 5px;
+        }
+
+        .journalStat strong {
+          font-size: 20px;
+        }
+
+        .journalLayout {
+          display: grid;
+          grid-template-columns:
+            360px
+            minmax(0, 1fr);
+          gap: 18px;
+        }
+
+        .form {
+          background: #080f1d;
+          border: 1px solid #1e293b;
+          border-radius: 12px;
+          padding: 15px;
+        }
+
+        .form h3 {
+          margin: 0 0 15px;
+          font-size: 15px;
+        }
+
+        .formGrid {
+          display: grid;
+          grid-template-columns:
+            repeat(2, 1fr);
+          gap: 10px;
+        }
+
+        .field {
+          display: flex;
+          flex-direction: column;
+          gap: 5px;
+        }
+
+        .field.full {
+          grid-column: 1 / -1;
+        }
+
+        .field label {
+          color: #64748b;
+          font-size: 10px;
+          text-transform: uppercase;
+        }
+
+        .field input,
+        .field select,
+        .field textarea {
+          width: 100%;
+          border: 1px solid #263247;
+          background: #050b16;
+          color: #e5e7eb;
+          border-radius: 8px;
+          padding: 9px;
+          outline: none;
+        }
+
+        .field input:focus,
+        .field select:focus,
+        .field textarea:focus {
+          border-color: #60a5fa;
+        }
+
+        .field textarea {
+          min-height: 75px;
+          resize: vertical;
+        }
+
+        .formButtons {
+          display: flex;
+          gap: 8px;
+          margin-top: 12px;
+        }
+
+        .primaryButton,
+        .secondaryButton,
+        .deleteButton {
+          border: none;
+          border-radius: 8px;
+          padding: 9px 12px;
+          cursor: pointer;
+          font-weight: 700;
+        }
+
+        .primaryButton {
+          background: #2563eb;
+          color: white;
+          flex: 1;
+        }
+
+        .secondaryButton {
+          background: #1e293b;
+          color: #cbd5e1;
+        }
+
+        .deleteButton {
+          background: rgba(
+            239,
+            68,
+            68,
+            0.1
+          );
+          color: #fca5a5;
+          font-size: 11px;
+        }
+
+        .primaryButton:hover {
+          background: #1d4ed8;
+        }
+
+        .secondaryButton:hover {
+          background: #334155;
+        }
+
+        .trades {
+          overflow-x: auto;
+        }
+
+        .tradeTable {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 11px;
+        }
+
+        .tradeTable th {
+          text-align: left;
+          color: #64748b;
+          font-weight: 600;
+          padding: 9px;
+          border-bottom: 1px solid #1e293b;
+        }
+
+        .tradeTable td {
+          padding: 10px 9px;
+          border-bottom: 1px solid
+            rgba(30, 41, 59, 0.7);
+          white-space: nowrap;
+        }
+
+        .result {
+          display: inline-block;
+          border-radius: 999px;
+          padding: 4px 8px;
+          font-weight: 800;
+          text-transform: uppercase;
+          font-size: 9px;
+        }
+
+        .result.win {
+          color: #86efac;
+          background: rgba(
+            34,
+            197,
+            94,
+            0.1
+          );
+        }
+
+        .result.loss {
+          color: #fca5a5;
+          background: rgba(
+            239,
+            68,
+            68,
+            0.1
+          );
+        }
+
+        .result.breakeven {
+          color: #fde68a;
+          background: rgba(
+            234,
+            179,
+            8,
+            0.1
+          );
+        }
+
+        .result.open {
+          color: #93c5fd;
+          background: rgba(
+            59,
+            130,
+            246,
+            0.1
+          );
+        }
+
+        .positive {
+          color: #86efac;
+        }
+
+        .negative {
+          color: #fca5a5;
+        }
+
+        .error {
+          color: #fca5a5;
+          font-size: 12px;
+          margin-top: 8px;
+        }
+
+        .empty {
+          color: #64748b;
+          text-align: center;
+          padding: 30px;
+          font-size: 12px;
+        }
+
+        .footer {
+          text-align: center;
+          color: #475569;
+          font-size: 11px;
+          padding: 10px;
+        }
+
+        @media (max-width: 1100px) {
+          .mainGrid {
+            grid-template-columns: 1fr;
+          }
+
+          .scannerGrid {
+            grid-template-columns:
+              repeat(2, 1fr);
+          }
+
+          .journalLayout {
+            grid-template-columns: 1fr;
+          }
+        }
+
+        @media (max-width: 700px) {
+          .page {
+            padding: 12px;
+          }
+
+          .header {
+            align-items: flex-start;
+            flex-direction: column;
+          }
+
+          .summary {
+            grid-template-columns:
+              repeat(2, 1fr);
+          }
+
+          .scannerGrid {
+            grid-template-columns: 1fr;
+          }
+
+          .detailGrid {
+            grid-template-columns: 1fr;
+          }
+
+          .levels {
+            grid-template-columns: 1fr;
+          }
+
+          .journalStats {
+            grid-template-columns:
+              repeat(2, 1fr);
+          }
         }
       `}</style>
+
+      <div className="container">
+
+        {/* ================================================== */}
+        {/* HEADER */}
+        {/* ================================================== */}
+
+        <header className="header">
+          <div className="brand">
+            <h1>⚡ Twin Edge</h1>
+
+            <p>
+              Multi-market analysis &
+              trade journal
+            </p>
+          </div>
+
+          <div className="online">
+            <span className="dot" />
+            MT5 Analysis Online
+          </div>
+        </header>
+
+        {/* ================================================== */}
+        {/* SUMMARY */}
+        {/* ================================================== */}
+
+        <section className="summary">
+          <div className="summaryCard">
+            <span>
+              Strong Setups
+            </span>
+
+            <strong>
+              {strongSetups}
+            </strong>
+          </div>
+
+          <div className="summaryCard">
+            <span>
+              Possible Setups
+            </span>
+
+            <strong>
+              {possibleSetups}
+            </strong>
+          </div>
+
+          <div className="summaryCard">
+            <span>
+              Waiting
+            </span>
+
+            <strong>
+              {waitingMarkets}
+            </strong>
+          </div>
+
+          <div className="summaryCard">
+            <span>
+              No Trade
+            </span>
+
+            <strong>
+              {noTradeMarkets}
+            </strong>
+          </div>
+        </section>
+
+        {/* ================================================== */}
+        {/* SCANNER */}
+        {/* ================================================== */}
+
+        <section className="scanner">
+          <div className="sectionHeader">
+            <h2>
+              Market Scanner
+            </h2>
+
+            <div className="refresh">
+              {loading
+                ? "Loading..."
+                : `Updated ${lastRefresh}`}
+            </div>
+          </div>
+
+          {scannerError && (
+            <div className="error">
+              {scannerError}
+            </div>
+          )}
+
+          <div className="scannerGrid">
+            {markets.map(
+              (market) => (
+                <div
+                  key={market.symbol}
+                  className={
+                    "marketCard " +
+                    (selectedSymbol ===
+                    market.symbol
+                      ? "selected"
+                      : "")
+                  }
+                  onClick={() =>
+                    selectMarket(
+                      market.symbol
+                    )
+                  }
+                >
+                  <div className="marketTop">
+                    <div className="symbol">
+                      {market.symbol}
+                    </div>
+
+                    <span
+                      className={statusClass(
+                        market.status
+                      )}
+                    >
+                      {market.status}
+                    </span>
+                  </div>
+
+                  <div
+                    className={
+                      "price " +
+                      directionClass(
+                        market.direction
+                      )
+                    }
+                  >
+                    {market.price !==
+                    null
+                      ? formatPrice(
+                          market.price,
+                          market.symbol ===
+                            "USDJPY"
+                            ? 3
+                            : 5
+                        )
+                      : "—"}
+                  </div>
+
+                  <div className="marketBottom">
+                    <span
+                      className={
+                        "direction " +
+                        directionClass(
+                          market.direction
+                        )
+                      }
+                    >
+                      {safeText(
+                        market.direction
+                      )}
+                    </span>
+
+                    <span>
+                      Score{" "}
+                      {market.score}/
+                      {market.max_score}
+                    </span>
+                  </div>
+                </div>
+              )
+            )}
+          </div>
+        </section>
+
+        {/* ================================================== */}
+        {/* MAIN MARKET AREA */}
+        {/* ================================================== */}
+
+        <section className="mainGrid">
+
+          {/* CHART */}
+
+          <div className="panel chartPanel">
+
+            <div className="marketTitle">
+              <div>
+                <h2>
+                  {selectedSymbol}
+                </h2>
+
+                <p>
+                  M1 execution chart ·
+                  EMA20 · S/R · Trade Levels
+                </p>
+              </div>
+
+              {selectedMarket && (
+                <span
+                  className={statusClass(
+                    selectedMarket.status
+                  )}
+                >
+                  {selectedMarket.status}
+                </span>
+              )}
+            </div>
+
+            {marketLoading && (
+              <div className="empty">
+                Loading market...
+              </div>
+            )}
+
+            {marketError && (
+              <div className="error">
+                {marketError}
+              </div>
+            )}
+
+            <div
+              ref={chartContainerRef}
+              className="chart"
+            />
+
+            {selectedMarket && (
+              <div className="levels">
+
+                <div className="level">
+                  <span>
+                    ENTRY
+                  </span>
+
+                  <strong>
+                    {formatPrice(
+                      selectedMarket
+                        .trade_levels
+                        .entry
+                    )}
+                  </strong>
+                </div>
+
+                <div className="level">
+                  <span>
+                    STOP LOSS
+                  </span>
+
+                  <strong>
+                    {formatPrice(
+                      selectedMarket
+                        .trade_levels
+                        .stop_loss
+                    )}
+                  </strong>
+                </div>
+
+                <div className="level">
+                  <span>
+                    TAKE PROFIT
+                  </span>
+
+                  <strong>
+                    {formatPrice(
+                      selectedMarket
+                        .trade_levels
+                        .take_profit
+                    )}
+                  </strong>
+                </div>
+
+              </div>
+            )}
+          </div>
+
+          {/* ANALYSIS */}
+
+          <div className="panel">
+
+            {selectedMarket ? (
+              <>
+                <div className="scoreBox">
+                  <strong>
+                    {
+                      selectedMarket.score
+                    }
+                    /
+                    {
+                      selectedMarket
+                        .max_score
+                    }
+                  </strong>
+
+                  <span>
+                    Twin Edge Setup Score
+                  </span>
+                </div>
+
+                <div className="detailCard">
+                  <h3>
+                    M15 Context
+                  </h3>
+
+                  <div className="detailRow">
+                    <span>
+                      Direction
+                    </span>
+
+                    <strong
+                      className={
+                        directionClass(
+                          selectedMarket
+                            .m15
+                            .direction
+                        )
+                      }
+                    >
+                      {safeText(
+                        selectedMarket
+                          .m15
+                          .direction
+                      )}
+                    </strong>
+                  </div>
+
+                  <div className="detailRow">
+                    <span>
+                      Structure
+                    </span>
+
+                    <strong>
+                      {safeText(
+                        selectedMarket
+                          .m15
+                          .structure_description ||
+                          selectedMarket
+                            .m15
+                            .structure
+                      )}
+                    </strong>
+                  </div>
+
+                  <div className="detailRow">
+                    <span>
+                      EMA20
+                    </span>
+
+                    <strong>
+                      {formatPrice(
+                        selectedMarket
+                          .m15
+                          .ema20,
+                        6
+                      )}
+                    </strong>
+                  </div>
+
+                  <div className="detailRow">
+                    <span>
+                      RSI14
+                    </span>
+
+                    <strong>
+                      {formatNumber(
+                        selectedMarket
+                          .m15
+                          .rsi14
+                      )}
+                    </strong>
+                  </div>
+
+                  <div className="detailRow">
+                    <span>
+                      Confidence
+                    </span>
+
+                    <strong>
+                      {
+                        selectedMarket
+                          .m15
+                          .confidence
+                      }
+                      %
+                    </strong>
+                  </div>
+                </div>
+
+                <div
+                  className="detailCard"
+                  style={{
+                    marginTop: 12,
+                  }}
+                >
+                  <h3>
+                    M1 Execution
+                  </h3>
+
+                  <div className="detailRow">
+                    <span>
+                      Direction
+                    </span>
+
+                    <strong
+                      className={
+                        directionClass(
+                          selectedMarket
+                            .m1
+                            .direction
+                        )
+                      }
+                    >
+                      {safeText(
+                        selectedMarket
+                          .m1
+                          .direction
+                      )}
+                    </strong>
+                  </div>
+
+                  <div className="detailRow">
+                    <span>
+                      Location
+                    </span>
+
+                    <strong>
+                      {
+                        selectedMarket
+                          .setup
+                          .location
+                      }
+                    </strong>
+                  </div>
+
+                  <div className="detailRow">
+                    <span>
+                      RSI14
+                    </span>
+
+                    <strong>
+                      {formatNumber(
+                        selectedMarket
+                          .m1
+                          .rsi14
+                      )}
+                    </strong>
+                  </div>
+
+                  <div className="detailRow">
+                    <span>
+                      Candlestick
+                    </span>
+
+                    <strong>
+                      {safeText(
+                        selectedMarket
+                          .m1
+                          .candlestick
+                          .pattern
+                      )}
+                    </strong>
+                  </div>
+
+                  <div className="detailRow">
+                    <span>
+                      Support
+                    </span>
+
+                    <strong>
+                      {formatPrice(
+                        selectedMarket
+                          .m1
+                          .support
+                      )}
+                    </strong>
+                  </div>
+
+                  <div className="detailRow">
+                    <span>
+                      Resistance
+                    </span>
+
+                    <strong>
+                      {formatPrice(
+                        selectedMarket
+                          .m1
+                          .resistance
+                      )}
+                    </strong>
+                  </div>
+                </div>
+
+                <div
+                  className="detailCard"
+                  style={{
+                    marginTop: 12,
+                  }}
+                >
+                  <h3>
+                    Setup Reasons
+                  </h3>
+
+                  {selectedMarket
+                    .setup
+                    .reasons
+                    .length > 0 ? (
+                    <ul className="list">
+                      {selectedMarket.setup.reasons.map(
+                        (
+                          reason,
+                          index
+                        ) => (
+                          <li
+                            className="reason"
+                            key={
+                              index
+                            }
+                          >
+                            {reason}
+                          </li>
+                        )
+                      )}
+                    </ul>
+                  ) : (
+                    <div className="empty">
+                      No confirmed reasons.
+                    </div>
+                  )}
+                </div>
+
+                <div
+                  className="detailCard"
+                  style={{
+                    marginTop: 12,
+                  }}
+                >
+                  <h3>
+                    Warnings
+                  </h3>
+
+                  {selectedMarket
+                    .setup
+                    .warnings
+                    .length > 0 ? (
+                    <ul className="list">
+                      {selectedMarket.setup.warnings.map(
+                        (
+                          warning,
+                          index
+                        ) => (
+                          <li
+                            className="warning"
+                            key={
+                              index
+                            }
+                          >
+                            {warning}
+                          </li>
+                        )
+                      )}
+                    </ul>
+                  ) : (
+                    <div className="empty">
+                      No major warnings.
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  className="primaryButton"
+                  style={{
+                    marginTop: 12,
+                    width: "100%",
+                  }}
+                  onClick={
+                    useCurrentSetup
+                  }
+                >
+                  Use This Setup in Journal
+                </button>
+              </>
+            ) : (
+              <div className="empty">
+                Select a market.
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* ================================================== */}
+        {/* JOURNAL */}
+        {/* ================================================== */}
+
+        <section className="journal">
+
+          <div className="sectionHeader">
+            <h2>
+              📓 Trade Journal
+            </h2>
+
+            <div className="refresh">
+              Track your setups,
+              results and P/L
+            </div>
+          </div>
+
+          {journalError && (
+            <div className="error">
+              {journalError}
+            </div>
+          )}
+
+          {/* JOURNAL STATS */}
+
+          <div className="journalStats">
+
+            <div className="journalStat">
+              <span>
+                TOTAL TRADES
+              </span>
+
+              <strong>
+                {
+                  journal.stats
+                    .total_trades
+                }
+              </strong>
+            </div>
+
+            <div className="journalStat">
+              <span>
+                WIN RATE
+              </span>
+
+              <strong>
+                {
+                  journal.stats
+                    .win_rate
+                }
+                %
+              </strong>
+            </div>
+
+            <div className="journalStat">
+              <span>
+                WINS
+              </span>
+
+              <strong className="positive">
+                {
+                  journal.stats
+                    .wins
+                }
+              </strong>
+            </div>
+
+            <div className="journalStat">
+              <span>
+                LOSSES
+              </span>
+
+              <strong className="negative">
+                {
+                  journal.stats
+                    .losses
+                }
+              </strong>
+            </div>
+
+            <div className="journalStat">
+              <span>
+                TOTAL P/L
+              </span>
+
+              <strong
+                className={
+                  journal.stats
+                    .total_pnl >= 0
+                    ? "positive"
+                    : "negative"
+                }
+              >
+                {journal.stats
+                  .total_pnl >= 0
+                  ? "+"
+                  : ""}
+                {formatNumber(
+                  journal.stats
+                    .total_pnl
+                )}
+              </strong>
+            </div>
+
+          </div>
+
+          <div className="journalLayout">
+
+            {/* FORM */}
+
+            <form
+              className="form"
+              onSubmit={
+                submitJournalTrade
+              }
+            >
+              <h3>
+                Add Trade
+              </h3>
+
+              <div className="formGrid">
+
+                <div className="field">
+                  <label>
+                    Symbol
+                  </label>
+
+                  <select
+                    value={
+                      journalForm.symbol
+                    }
+                    onChange={(event) =>
+                      setJournalForm(
+                        (previous) => ({
+                          ...previous,
+                          symbol:
+                            event.target
+                              .value,
+                        })
+                      )
+                    }
+                  >
+                    {WATCHLIST.map(
+                      (symbol) => (
+                        <option
+                          key={symbol}
+                          value={symbol}
+                        >
+                          {symbol}
+                        </option>
+                      )
+                    )}
+                  </select>
+                </div>
+
+                <div className="field">
+                  <label>
+                    Direction
+                  </label>
+
+                  <select
+                    value={
+                      journalForm.direction
+                    }
+                    onChange={(event) =>
+                      setJournalForm(
+                        (previous) => ({
+                          ...previous,
+                          direction:
+                            event.target
+                              .value,
+                        })
+                      )
+                    }
+                  >
+                    <option value="bullish">
+                      Bullish
+                    </option>
+
+                    <option value="bearish">
+                      Bearish
+                    </option>
+                  </select>
+                </div>
+
+                <div className="field">
+                  <label>
+                    Entry
+                  </label>
+
+                  <input
+                    type="number"
+                    step="any"
+                    value={
+                      journalForm.entry
+                    }
+                    onChange={(event) =>
+                      setJournalForm(
+                        (previous) => ({
+                          ...previous,
+                          entry:
+                            event.target
+                              .value,
+                        })
+                      )
+                    }
+                    placeholder="0.00"
+                  />
+                </div>
+
+                <div className="field">
+                  <label>
+                    Stop Loss
+                  </label>
+
+                  <input
+                    type="number"
+                    step="any"
+                    value={
+                      journalForm.stop_loss
+                    }
+                    onChange={(event) =>
+                      setJournalForm(
+                        (previous) => ({
+                          ...previous,
+                          stop_loss:
+                            event.target
+                              .value,
+                        })
+                      )
+                    }
+                    placeholder="0.00"
+                  />
+                </div>
+
+                <div className="field">
+                  <label>
+                    Take Profit
+                  </label>
+
+                  <input
+                    type="number"
+                    step="any"
+                    value={
+                      journalForm.take_profit
+                    }
+                    onChange={(event) =>
+                      setJournalForm(
+                        (previous) => ({
+                          ...previous,
+                          take_profit:
+                            event.target
+                              .value,
+                        })
+                      )
+                    }
+                    placeholder="0.00"
+                  />
+                </div>
+
+                <div className="field">
+                  <label>
+                    Exit Price
+                  </label>
+
+                  <input
+                    type="number"
+                    step="any"
+                    value={
+                      journalForm.exit_price
+                    }
+                    onChange={(event) =>
+                      setJournalForm(
+                        (previous) => ({
+                          ...previous,
+                          exit_price:
+                            event.target
+                              .value,
+                        })
+                      )
+                    }
+                    placeholder="0.00"
+                  />
+                </div>
+
+                <div className="field">
+                  <label>
+                    Risk %
+                  </label>
+
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={
+                      journalForm.risk_percent
+                    }
+                    onChange={(event) =>
+                      setJournalForm(
+                        (previous) => ({
+                          ...previous,
+                          risk_percent:
+                            event.target
+                              .value,
+                        })
+                      )
+                    }
+                  />
+                </div>
+
+                <div className="field">
+                  <label>
+                    P/L
+                  </label>
+
+                  <input
+                    type="number"
+                    step="any"
+                    value={
+                      journalForm.pnl
+                    }
+                    onChange={(event) =>
+                      setJournalForm(
+                        (previous) => ({
+                          ...previous,
+                          pnl:
+                            event.target
+                              .value,
+                        })
+                      )
+                    }
+                    placeholder="0.00"
+                  />
+                </div>
+
+                <div className="field">
+                  <label>
+                    Result
+                  </label>
+
+                  <select
+                    value={
+                      journalForm.result
+                    }
+                    onChange={(event) =>
+                      setJournalForm(
+                        (previous) => ({
+                          ...previous,
+                          result:
+                            event.target
+                              .value,
+                        })
+                      )
+                    }
+                  >
+                    <option value="open">
+                      Open
+                    </option>
+
+                    <option value="win">
+                      Win
+                    </option>
+
+                    <option value="loss">
+                      Loss
+                    </option>
+
+                    <option value="breakeven">
+                      Breakeven
+                    </option>
+                  </select>
+                </div>
+
+                <div className="field full">
+                  <label>
+                    Notes
+                  </label>
+
+                  <textarea
+                    value={
+                      journalForm.notes
+                    }
+                    onChange={(event) =>
+                      setJournalForm(
+                        (previous) => ({
+                          ...previous,
+                          notes:
+                            event.target
+                              .value,
+                        })
+                      )
+                    }
+                    placeholder="Why did you take this trade?"
+                  />
+                </div>
+
+              </div>
+
+              <div className="formButtons">
+                <button
+                  type="submit"
+                  className="primaryButton"
+                  disabled={
+                    journalLoading
+                  }
+                >
+                  {journalLoading
+                    ? "Saving..."
+                    : "Save Trade"}
+                </button>
+
+                <button
+                  type="button"
+                  className="secondaryButton"
+                  onClick={
+                    useCurrentSetup
+                  }
+                >
+                  Use Setup
+                </button>
+              </div>
+            </form>
+
+            {/* TRADE HISTORY */}
+
+            <div className="trades">
+
+              {journal.trades.length ===
+              0 ? (
+                <div className="empty">
+                  No trades in the journal
+                  yet.
+                  <br />
+                  Add your first setup
+                  using the form.
+                </div>
+              ) : (
+                <table className="tradeTable">
+                  <thead>
+                    <tr>
+                      <th>
+                        Symbol
+                      </th>
+
+                      <th>
+                        Direction
+                      </th>
+
+                      <th>
+                        Entry
+                      </th>
+
+                      <th>
+                        Exit
+                      </th>
+
+                      <th>
+                        Result
+                      </th>
+
+                      <th>
+                        P/L
+                      </th>
+
+                      <th>
+                        Date
+                      </th>
+
+                      <th>
+                        Action
+                      </th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {journal.trades
+                      .slice()
+                      .reverse()
+                      .map(
+                        (trade) => (
+                          <tr
+                            key={
+                              trade.id
+                            }
+                          >
+                            <td>
+                              <strong>
+                                {
+                                  trade.symbol
+                                }
+                              </strong>
+                            </td>
+
+                            <td
+                              className={
+                                directionClass(
+                                  trade.direction
+                                )
+                              }
+                            >
+                              {
+                                trade.direction
+                              }
+                            </td>
+
+                            <td>
+                              {formatPrice(
+                                trade.entry
+                              )}
+                            </td>
+
+                            <td>
+                              {trade.exit_price
+                                ? formatPrice(
+                                    trade.exit_price
+                                  )
+                                : "—"}
+                            </td>
+
+                            <td>
+                              <span
+                                className={resultClass(
+                                  trade.result
+                                )}
+                              >
+                                {
+                                  trade.result
+                                }
+                              </span>
+                            </td>
+
+                            <td
+                              className={
+                                trade.pnl >=
+                                0
+                                  ? "positive"
+                                  : "negative"
+                              }
+                            >
+                              {trade.pnl >=
+                              0
+                                ? "+"
+                                : ""}
+                              {formatNumber(
+                                trade.pnl
+                              )}
+                            </td>
+
+                            <td>
+                              {new Date(
+                                trade.created_at
+                              ).toLocaleDateString()}
+                            </td>
+
+                            <td>
+                              <button
+                                className="deleteButton"
+                                onClick={() =>
+                                  deleteJournalTrade(
+                                    trade.id
+                                  )
+                                }
+                              >
+                                Delete
+                              </button>
+                            </td>
+                          </tr>
+                        )
+                      )}
+                  </tbody>
+                </table>
+              )}
+
+            </div>
+          </div>
+        </section>
+
+        <footer className="footer">
+          Twin Edge · MT5 analysis only ·
+          Automatic trading disabled
+        </footer>
+
+      </div>
     </main>
   );
 }
